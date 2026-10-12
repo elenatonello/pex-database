@@ -11,6 +11,7 @@ function failed = build_pex_database(shots, outDir, varargin)
 %     'Python'    'python3'   python executable (must have numpy, scipy, h5py)
 %     'Script'    <repo>/pexdb/build_database.py
 %     'Regime'    ''      'L' or 'H', forwarded as --regime= when SHOTINFO is missing
+%     'Baffle'    ''      force 'NINO' or 'SILO' for all shots (default: config/baffles.csv)
 %
 %   Example:
 %     build_pex_database([89437 89837 88306], '/to/the/database');
@@ -20,6 +21,7 @@ addParameter(p, 'Overwrite', false);
 addParameter(p, 'Python', 'python3');
 addParameter(p, 'Script', fullfile(fileparts(fileparts(mfilename('fullpath'))), 'pexdb', 'build_database.py'));
 addParameter(p, 'Regime', '');
+addParameter(p, 'Baffle', '');
 parse(p, varargin{:});
 o = p.Results;
 
@@ -37,7 +39,7 @@ for shot = shots(:)'
     cleanup = onCleanup(@() delete_if_exists(tmp));    % removed even on error / Ctrl-C
     try
         fprintf('[%d] fetching...\n', shot);
-        S = fetch_shot_data(shot);
+        S = fetch_shot_data(shot, o.Baffle);
         save(tmp, '-struct', 'S', '-v7');              % -v7: readable by scipy.io.loadmat
         clear S                                        % free memory before calling python
 

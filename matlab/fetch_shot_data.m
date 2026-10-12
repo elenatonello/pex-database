@@ -1,8 +1,12 @@
-function S = fetch_shot_data(shot)
+function S = fetch_shot_data(shot, baffle)
 %FETCH_SHOT_DATA  Retrieve all experimental data needed by build_database.py for one shot.
 %   S = fetch_shot_data(shot) returns a struct with the fields
 %   CXRSdata, LPdata, EdgeData, FIRdata, heating, wall, shot
 %   (the same variables that used to be saved in STRUCTexp.mat).
+%   S = fetch_shot_data(shot, baffle) forces the baffle ('NINO'/'SILO');
+%   by default it is looked up in config/baffles.csv.
+
+if nargin < 2 || isempty(baffle), baffle = baffle_for_shot(shot); end
 
 CXRSdata    = CXRS_load_MDS(shot, 1, 'result', [], 0, 0);
 LPdata      = LP_MDSdld(shot);
@@ -34,7 +38,7 @@ wall.Z_tiles       = Zt;
 wall.R_tiles       = Rt;
 wall.RZv_ivessel   = vD.RZv_i;
 wall.RZv_ovessel   = vD.RZv_o;
-wall.baffle        = 'SILO';
+wall.baffle        = baffle;
 
 S = struct('CXRSdata', CXRSdata, 'LPdata', LPdata, 'EdgeData', EdgeData, ...
            'FIRdata', FIRdata, 'heating', heating, 'wall', wall, 'shot', shot);
