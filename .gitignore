@@ -1,0 +1,7 @@
+*.h5
+*.mat
+__pycache__/
+*.egg-info/
+~$*
+figures/
+.DS_Store
