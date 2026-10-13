@@ -231,7 +231,7 @@ def plot_geometry(shots, layers=GEOMETRY_LAYERS, with_equilibrium=True, t=1.0):
         pt.draw_wall(ax, s)
         if with_equilibrium and s.has("equilibrium/r_contour"):
             k = s.frame(t)
-            ax.plot(s["equilibrium/r_contour"][:, k], s["equilibrium/z_contour"][:, k], "c", lw=1)
+            ax.plot(s["equilibrium/r_contour"][:, k], s["equilibrium/z_contour"][:, k], color="0.3", lw=1.4)
         legend = []
 
         def lines(name, r0, z0, r1, z1, color, ls="-", lw=0.7):
@@ -345,9 +345,10 @@ def _geometry_layers(s):
 
     def ir_camera(cam, **st):
         """IR target profile (thick line) plus, when stored: the outline of the port the
-        camera looks through (closed contour, transparent fill), the detector (marker)
-        and the field of view, a shaded triangle from the detector to the two ends of
-        the target profile."""
+        camera looks through (closed contour, transparent fill) and the field of view, a
+        shaded triangle from the detector to the two ends of the target profile, shown
+        only where it is inside the vessel (clipped to the inner vessel contour; the
+        detector itself is not drawn)."""
         def draw(ax, c):
             r, z = _rz(s, f"camera_ir/{cam}")
             art = ax.plot(r, z, color=c, **st)[0]
@@ -357,12 +358,17 @@ def _geometry_layers(s):
                                          alpha=0.5, lw=1.2))
             if s.has(f"camera_ir/{cam}/detector/r"):
                 dr, dz = (float(v[0]) for v in _rz(s, f"camera_ir/{cam}/detector"))
-                ax.plot(dr, dz, "s", color=c, ms=6, mec="k", mew=0.6, zorder=5)
                 ok = np.isfinite(r) & np.isfinite(z)
                 if ok.sum() >= 2:                                  # first / last valid target point
                     ends = np.array([[r[ok][0], z[ok][0]], [r[ok][-1], z[ok][-1]]])
-                    ax.add_patch(plt.Polygon(np.vstack([[dr, dz], ends]), closed=True, fc=c,
-                                             ec=c, alpha=0.18, lw=0.6, zorder=0))
+                    # add_artist (not add_patch): the unclipped triangle, which reaches the
+                    # detector outside the vessel, must not stretch the axis limits
+                    fov = ax.add_artist(plt.Polygon(np.vstack([[dr, dz], ends]), closed=True, fc=c,
+                                                    ec="none", alpha=0.18, zorder=0))
+                    vi = s.wall().get("vessel_inner")
+                    if vi is not None:                             # keep only the part inside the vessel
+                        fov.set_clip_path(plt.Polygon(np.column_stack(vi), closed=True,
+                                                      transform=ax.transData))
             return art
         return draw
 
@@ -407,11 +413,11 @@ def _geometry_layers(s):
         ("DSS LOS", "spectrometer_visible", "tab:orange",
          seg("spectrometer_visible/line_of_sight", lw=0.8)),
         ("LP outer target", "langmuir_probes", "tab:purple",
-         pts("langmuir_probes/outer_target/position", marker="o", ms=3)),
+         pts("langmuir_probes/outer_target/position", marker="o", ms=3, zorder=4)),
         ("LP inner target", "langmuir_probes", "tab:pink",
-         pts("langmuir_probes/inner_target/position", marker="o", ms=3)),
+         pts("langmuir_probes/inner_target/position", marker="o", ms=3, zorder=4)),
         ("LP embedded", "langmuir_probes", "0.5",
-         pts("langmuir_probes/embedded/position", marker=".", ms=2)),
+         pts("langmuir_probes/embedded/position", marker=".", ms=2, zorder=4)),
         ("pressure gauge ports", "barometry", "tab:brown", pressure("pressure_gauges")),
         ("IR HIR", "camera_ir", "darkcyan", ir_camera("HIR", lw=3, alpha=0.7)),
         ("IR VIR", "camera_ir", "teal", ir_camera("VIR", lw=3, alpha=0.7)),
@@ -452,7 +458,7 @@ def plot_geometry(shots, t=1.0, with_equilibrium=True, layers=None):
                 missing.append(label)
         if with_equilibrium and s.has("equilibrium/r_contour"):
             k = s.frame(t)
-            ax.plot(s["equilibrium/r_contour"][:, k], s["equilibrium/z_contour"][:, k], "c", lw=1,
+            ax.plot(s["equilibrium/r_contour"][:, k], s["equilibrium/z_contour"][:, k], color="0.3", lw=1.4,
                     label=f"LCFS t={t:.2f}s")
         ax.autoscale_view()
         ax.set_title(s.label, fontsize=9, color=s.color())
