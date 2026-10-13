@@ -2,9 +2,9 @@
 """Compare SILO (red) and NINO (blue) shots against the core Thomson density.
 
   Figure 1 (power):    total target power HIR+VIR (filled) and input power
-                       OH+ECRH+NBI (open) [kW] vs ne_core (TS)
+                       P_in = OH+ECRH+NBI - P_rad,core (open) [kW] vs ne_core (TS)
   Figure 2 (pressure): divertor pressure [mPa] vs ne_core (TS)
-                       left: baratron (BAR); right: APG gauge
+                       BAR baratron (filled) and APG gauge (open)
 
   Figure 3 (upstream): ne, Te (Thomson) and Ti (CXRS) profiles at selected times,
                        one column per time (x = rho, or dsep with --x dsep)
@@ -15,9 +15,12 @@ Colour = baffle (from the shot's 'baffle' attribute), marker = shot.
 Usage:
   python3 -m pexdb.compare_baffles $PEX_DB_DIR                 # all shot_*.h5 in folder
   python3 -m pexdb.compare_baffles $PEX_DB_DIR/shot_8*.h5 --save figures/baffle --t-range 0.6 1.6
+  python3 -m pexdb.compare_baffles $PEX_DB_DIR                 # no --save: just show
+  python3 -m pexdb.compare_baffles $PEX_DB_DIR --save figures/baffle --ask   # show, then ask
 """
 import argparse
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 
 from pexdb import shotdb
@@ -25,6 +28,7 @@ from pexdb.plotting import plot_types as pt
 from pexdb.plotting import diag_plots as dp
 from pexdb.shotdb import Unavailable
 
+PRAD = "bolometer/power_core"     # core radiated power subtracted from the heating
 XLABEL = r"$n_{e,core}$ (TS) [$10^{19}$ m$^{-3}$]"
 
 
@@ -56,12 +60,12 @@ def power_vs_necore(shots, t_range=(0.6, 1.6)):
     fig, ax = plt.subplots(figsize=(6, 4.5))
     _panel(ax, shots, lambda s: (s["camera_ir/HIR/power"] + s["camera_ir/VIR/power"]) * 1e-3,
            "power [kW]", t_range)
-    _panel(ax, shots, lambda s: dp.heating_total(s) * 1e-3, "power [kW]", t_range, filled=False)
+    _panel(ax, shots, lambda s: (dp.heating_total(s) - s[PRAD]) * 1e-3, "power [kW]", t_range, filled=False)
     ax.set_ylim(0, ax.get_ylim()[1] * 1.3)                    # headroom for the legends
     leg = ax.legend(handles=[
         plt.Line2D([], [], color="gray", marker="o", ls="none", label="targets (IR HIR+VIR)"),
         plt.Line2D([], [], color="gray", marker="o", mfc="none", ls="none",
-                   label=r"$P_{in}$ (OH+ECRH+NBI)")],
+                   label=r"$P_{in}$ = OH+ECRH+NBI $-$ $P_{rad,core}$")],
         fontsize=8, frameon=False, loc="upper left")
     ax.add_artist(leg)
     _legend(ax, shots, loc="upper right")
@@ -70,14 +74,18 @@ def power_vs_necore(shots, t_range=(0.6, 1.6)):
 
 
 def pressure_vs_necore(shots, t_range=(0.6, 1.6)):
-    fig, (a1, a2) = plt.subplots(1, 2, figsize=(10, 4), sharey=True)
-    _panel(a1, shots, lambda s: s["barometry/barometer/pressure_div"] * 1e3,
+    fig, ax = plt.subplots(figsize=(6, 4.5))
+    _panel(ax, shots, lambda s: s["barometry/barometer/pressure_div"] * 1e3,
            "divertor pressure [mPa]", t_range)
-    _panel(a2, shots, lambda s: s["barometry/pressure_gauges/pressure_div"] * 1e3,
-           "divertor pressure [mPa]", t_range)
-    a1.set_title("BAR (baratron)", fontsize=10)
-    a2.set_title("APG (gauge)", fontsize=10)
-    _legend(a1, shots)
+    _panel(ax, shots, lambda s: s["barometry/pressure_gauges/pressure_div"] * 1e3,
+           "divertor pressure [mPa]", t_range, filled=False)
+    ax.set_ylim(0, ax.get_ylim()[1] * 1.3)                    # headroom for the legends
+    leg = ax.legend(handles=[
+        plt.Line2D([], [], color="gray", marker="o", ls="none", label="BAR (baratron)"),
+        plt.Line2D([], [], color="gray", marker="o", mfc="none", ls="none", label="APG (gauge)")],
+        fontsize=8, frameon=False, loc="upper left")
+    ax.add_artist(leg)
+    _legend(ax, shots, loc="upper right")
     fig.tight_layout()
     return fig
 
@@ -109,11 +117,27 @@ def main():
     ap.add_argument("--x", choices=("rho", "dsep"), default="rho",
                     help="radial coordinate of the upstream profiles (dsep drops Ti)")
     ap.add_argument("--save", help="filename prefix: writes <prefix>_{power,pressure,upstream}.png")
+    ap.add_argument("--ask", action="store_true",
+                    help="with --save: show the figures first and save only if you answer y")
     args = ap.parse_args()
     shots = shotdb.load(args.source)
     print("  ".join(f"#{s.shot}:{s.baffle or '?'}" for s in shots))
-    compare(shots, tuple(args.t_range), tuple(args.times), args.x, args.save)
-    if not args.save:
+    if args.ask or not args.save:
+        bk = matplotlib.get_backend()
+        if bk.lower() in {"agg", "pdf", "ps", "svg", "pgf", "cairo", "template"}:
+            raise SystemExit(f"matplotlib backend '{bk}' cannot open windows (no display?). "
+                             "Use --save <prefix> and view the PNGs, ssh -X, or set "
+                             "MPLBACKEND=TkAgg / QtAgg / MacOSX.")
+    figs = compare(shots, tuple(args.t_range), tuple(args.times), args.x,
+                   None if args.ask else args.save)
+    if args.ask and args.save:
+        plt.show(block=False)
+        plt.pause(0.5)                                  # let the windows draw
+        if input(f"Save to {args.save}_*.png? [y/N] ").strip().lower() == "y":
+            for name, fig in figs.items():
+                fig.savefig(f"{args.save}_{name}.png", dpi=150)
+                print(f"  wrote {args.save}_{name}.png")
+    elif not args.save:
         plt.show()
 
 
