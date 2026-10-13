@@ -88,7 +88,7 @@ def time_traces(shots, items, t_range=None, sharex=True, color_by="auto", err_st
 
 # ---------------------------------------------------------------------------
 def profile_grid(shots, rows, times, xlabel, color_by="auto", err_style="bar",
-                 capsize=CAPSIZE, figsize=None):
+                 capsize=CAPSIZE, figsize=None, ms=4):
     """rows: list of dicts {label, get, [scale], [ylim], [xlim]} where
     get(shot) -> (x, y, yerr[, t]) with x, y, yerr shaped (time, space) or
     (space,) for x only; yerr may be None; t is the time axis of the data
@@ -121,10 +121,10 @@ def profile_grid(shots, rows, times, xlabel, color_by="auto", err_style="bar",
                 c = s.color(color_by)
                 xo, yo = xs[ok][o], ys[ok][o]
                 if es is not None and err_style == "bar":
-                    ax.errorbar(xo, yo, yerr=es[ok][o], color=c, marker=s.marker, ms=4, ls="none",
+                    ax.errorbar(xo, yo, yerr=es[ok][o], color=c, marker=s.marker, ms=ms, ls="none",
                                 elinewidth=0.8, capsize=capsize, capthick=0.8)
                 else:
-                    ax.plot(xo, yo, color=c, marker=s.marker, ms=4, ls="none")
+                    ax.plot(xo, yo, color=c, marker=s.marker, ms=ms, ls="none")
                     if es is not None and err_style == "shade":
                         ax.fill_between(xo, yo - es[ok][o], yo + es[ok][o], color=c,
                                         alpha=0.2, lw=0)

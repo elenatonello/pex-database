@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Compare SILO (red) and NINO (blue) shots against the core Thomson density.
 
-  Figure 1 (power):    total target power HIR+VIR (filled) and input power
-                       P_in = OH+ECRH+NBI - P_rad,core (open) [kW] vs ne_core (TS)
+  Figure 1 (fraction): fraction of the input power reaching the targets,
+                       (HIR+VIR) / P_in, with P_in = OH+ECRH+NBI - P_rad,core, vs ne_core (TS)
   Figure 2 (pressure): divertor pressure [mPa] vs ne_core (TS)
                        BAR baratron (filled) and APG gauge (open)
 
@@ -29,6 +29,8 @@ from pexdb.plotting import diag_plots as dp
 from pexdb.shotdb import Unavailable
 
 PRAD = "bolometer/power_core"     # core radiated power subtracted from the heating
+FIG = (7.5, 5.5)
+FONT = 15                          # base font size [pt]; markers / legends scale with it
 XLABEL = r"$n_{e,core}$ (TS) [$10^{19}$ m$^{-3}$]"
 
 
@@ -43,7 +45,7 @@ def _panel(ax, shots, get, ylabel, t_range, marker=None, filled=True):
             continue
         m = (s.t >= t_range[0]) & (s.t <= t_range[1]) & np.isfinite(x) & np.isfinite(y)
         c = s.color("baffle")
-        ax.scatter(x[m], y[m], s=18, marker=marker or s.marker,
+        ax.scatter(x[m], y[m], s=60, marker=marker or s.marker,
                    **(dict(color=c) if filled else dict(facecolors="none", edgecolors=c)))
     ax.set_xlabel(XLABEL)
     ax.set_ylabel(ylabel)
@@ -51,39 +53,40 @@ def _panel(ax, shots, get, ylabel, t_range, marker=None, filled=True):
 
 
 def _legend(ax, shots, loc="best"):
-    ax.legend(handles=[plt.Line2D([], [], color=s.color("baffle"), marker=s.marker, ls="none",
+    ax.legend(handles=[plt.Line2D([], [], color=s.color("baffle"), marker=s.marker, ls="none", ms=9,
                                   label=f"#{s.shot} {s.baffle or '?'}") for s in shots],
-              fontsize=7, frameon=False, loc=loc)
+              fontsize=FONT - 3, frameon=False, loc=loc)
 
 
-def power_vs_necore(shots, t_range=(0.6, 1.6)):
-    fig, ax = plt.subplots(figsize=(6, 4.5))
-    _panel(ax, shots, lambda s: (s["camera_ir/HIR/power"] + s["camera_ir/VIR/power"]) * 1e-3,
-           "power [kW]", t_range)
-    _panel(ax, shots, lambda s: (dp.heating_total(s) - s[PRAD]) * 1e-3, "power [kW]", t_range, filled=False)
-    ax.set_ylim(0, ax.get_ylim()[1] * 1.3)                    # headroom for the legends
-    leg = ax.legend(handles=[
-        plt.Line2D([], [], color="gray", marker="o", ls="none", label="targets (IR HIR+VIR)"),
-        plt.Line2D([], [], color="gray", marker="o", mfc="none", ls="none",
-                   label=r"$P_{in}$ = OH+ECRH+NBI $-$ $P_{rad,core}$")],
-        fontsize=8, frameon=False, loc="upper left")
-    ax.add_artist(leg)
-    _legend(ax, shots, loc="upper right")
+def fraction_vs_necore(shots, t_range=(0.6, 1.6)):
+    """Fraction of the input power that reaches the targets: (HIR+VIR) / P_in."""
+    fig, ax = plt.subplots(figsize=FIG)
+    _panel(ax, shots, lambda s: _target_fraction(s),
+           r"$(P_{HIR}+P_{VIR})\,/\,P_{in}$", t_range)
+    ax.set_ylim(bottom=0)
+    _legend(ax, shots)
     fig.tight_layout()
     return fig
 
 
+def _target_fraction(s):
+    p_in = dp.heating_total(s) - s[PRAD]
+    p_t = s["camera_ir/HIR/power"] + s["camera_ir/VIR/power"]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(p_in > 0, p_t / p_in, np.nan)             # no heating -> no fraction
+
+
 def pressure_vs_necore(shots, t_range=(0.6, 1.6)):
-    fig, ax = plt.subplots(figsize=(6, 4.5))
+    fig, ax = plt.subplots(figsize=FIG)
     _panel(ax, shots, lambda s: s["barometry/barometer/pressure_div"] * 1e3,
            "divertor pressure [mPa]", t_range)
     _panel(ax, shots, lambda s: s["barometry/pressure_gauges/pressure_div"] * 1e3,
            "divertor pressure [mPa]", t_range, filled=False)
     ax.set_ylim(0, ax.get_ylim()[1] * 1.3)                    # headroom for the legends
     leg = ax.legend(handles=[
-        plt.Line2D([], [], color="gray", marker="o", ls="none", label="BAR (baratron)"),
-        plt.Line2D([], [], color="gray", marker="o", mfc="none", ls="none", label="APG (gauge)")],
-        fontsize=8, frameon=False, loc="upper left")
+        plt.Line2D([], [], color="gray", marker="o", ls="none", ms=9, label="BAR (baratron)"),
+        plt.Line2D([], [], color="gray", marker="o", mfc="none", ls="none", ms=9, label="APG (gauge)")],
+        fontsize=FONT - 3, frameon=False, loc="upper left")
     ax.add_artist(leg)
     _legend(ax, shots, loc="upper right")
     fig.tight_layout()
@@ -92,8 +95,15 @@ def pressure_vs_necore(shots, t_range=(0.6, 1.6)):
 
 def upstream_profiles(shots, times=(0.8, 1.0, 1.2), x="dsep", xmin=None):
     """xmin: lower limit of the radial axis, in mm for x='dsep' (rho for x='rho')."""
-    return dp.profiles_ne_te_ti(shots, times, x=x, color_by="baffle",
-                                xrange=None if xmin is None else (xmin, None))[0]
+    rows = 3 if x == "rho" else 2
+    fig, axes = dp.profiles_ne_te_ti(shots, times, x=x, color_by="baffle", ms=9, capsize=3,
+                                     xrange=None if xmin is None else (xmin, None),
+                                     figsize=(5.2 * len(times), 3.6 * rows))
+    for ax in axes[0]:
+        ax.set_title(ax.get_title(), fontsize=FONT)
+    _legend(axes[0, -1], shots)                                  # replaces the small default
+    fig.tight_layout()
+    return fig
 
 
 def compare(shots, t_range=(0.6, 1.6), times=(0.8, 1.0, 1.2), x="dsep", xmin=None, save=None):
@@ -102,8 +112,10 @@ def compare(shots, t_range=(0.6, 1.6), times=(0.8, 1.0, 1.2), x="dsep", xmin=Non
     for s in shots:
         if s not in keep:
             print(f"  skip {s.label}: baffle '{s.baffle or '?'}' is neither NINO nor SILO")
-    figs = {"power": power_vs_necore(keep, t_range), "pressure": pressure_vs_necore(keep, t_range),
-            "upstream": upstream_profiles(keep, times, x, xmin)}
+    with plt.rc_context({"font.size": FONT}):
+        figs = {"fraction": fraction_vs_necore(keep, t_range),
+                "pressure": pressure_vs_necore(keep, t_range),
+                "upstream": upstream_profiles(keep, times, x, xmin)}
     if save:
         for name, fig in figs.items():
             fig.savefig(f"{save}_{name}.png", dpi=150)
@@ -121,7 +133,7 @@ def main():
                          "separatrix at the midplane in mm (default, drops Ti), or rho")
     ap.add_argument("--xmin", type=float, default=None,
                     help="lower limit of the radial axis (mm for dsep, default -70; rho for rho)")
-    ap.add_argument("--save", help="filename prefix: writes <prefix>_{power,pressure,upstream}.png")
+    ap.add_argument("--save", help="filename prefix: writes <prefix>_{fraction,pressure,upstream}.png")
     ap.add_argument("--ask", action="store_true",
                     help="with --save: show the figures first and save only if you answer y")
     args = ap.parse_args()
