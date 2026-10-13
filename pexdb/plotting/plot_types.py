@@ -11,6 +11,7 @@ shot is skipped for that panel (and reported once on the console).
 """
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.colors import to_rgba
 from matplotlib.collections import PolyCollection
 
 from pexdb.shotdb import Unavailable
@@ -88,7 +89,7 @@ def time_traces(shots, items, t_range=None, sharex=True, color_by="auto", err_st
 
 # ---------------------------------------------------------------------------
 def profile_grid(shots, rows, times, xlabel, color_by="auto", err_style="bar",
-                 capsize=CAPSIZE, figsize=None, ms=4):
+                 capsize=CAPSIZE, figsize=None, ms=4, shade=None):
     """rows: list of dicts {label, get, [scale], [ylim], [xlim]} where
     get(shot) -> (x, y, yerr[, t]) with x, y, yerr shaped (time, space) or
     (space,) for x only; yerr may be None; t is the time axis of the data
@@ -97,7 +98,8 @@ def profile_grid(shots, rows, times, xlabel, color_by="auto", err_style="bar",
 
     Points are drawn as markers only (no line). err_style: 'bar' = error bars,
     'shade' = shaded band y +- err (drawn through the points in x order),
-    None = no errors."""
+    None = no errors. ms = marker size; shade = alpha of the marker fill (None = solid
+    markers), the edge stays solid."""
     fig, axes = plt.subplots(len(rows), len(times), sharex="col", squeeze=False,
                              figsize=figsize or (3.3 * len(times) + 0.8, 2.3 * len(rows) + 0.6))
     for i, row in enumerate(rows):
@@ -120,11 +122,14 @@ def profile_grid(shots, rows, times, xlabel, color_by="auto", err_style="bar",
                 o = np.argsort(xs[ok])
                 c = s.color(color_by)
                 xo, yo = xs[ok][o], ys[ok][o]
+                mk = dict(marker=s.marker, ms=ms)
+                if shade is not None:
+                    mk.update(mfc=to_rgba(c, shade), mec=c, mew=1.3)
                 if es is not None and err_style == "bar":
-                    ax.errorbar(xo, yo, yerr=es[ok][o], color=c, marker=s.marker, ms=ms, ls="none",
+                    ax.errorbar(xo, yo, yerr=es[ok][o], color=c, ls="none", **mk,
                                 elinewidth=0.8, capsize=capsize, capthick=0.8)
                 else:
-                    ax.plot(xo, yo, color=c, marker=s.marker, ms=ms, ls="none")
+                    ax.plot(xo, yo, color=c, ls="none", **mk)
                     if es is not None and err_style == "shade":
                         ax.fill_between(xo, yo - es[ok][o], yo + es[ok][o], color=c,
                                         alpha=0.2, lw=0)
