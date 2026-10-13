@@ -10,6 +10,7 @@ A diagnostic missing in a shot is listed under its panel.
 Usage:
   python3 -m pexdb.geometry $PEX_DB_DIR/shot_89437.h5 $PEX_DB_DIR/shot_89837.h5
   python3 -m pexdb.geometry $PEX_DB_DIR --save figures/geom --t 1.1     # writes figures/geom_{plasma,radiation}.png
+  python3 -m pexdb.geometry $PEX_DB_DIR --save figures/geom --format svg   # or pdf
 """
 import argparse
 import matplotlib
@@ -39,7 +40,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument("source", nargs="+", help="folder(s), file(s) or glob(s) of shot_*.h5")
     ap.add_argument("--t", type=float, default=1.0, help="time of the LCFS [s] (default 1.0)")
-    ap.add_argument("--save", help="filename prefix: writes <prefix>_{plasma,radiation}.png")
+    ap.add_argument("--save", help="filename prefix: writes <prefix>_{plasma,radiation}.<format>")
+    ap.add_argument("--format", default="png", choices=("png", "svg", "pdf"),
+                    help="file format of the saved figures (default png)")
     args = ap.parse_args()
     if not args.save and matplotlib.get_backend().lower() in {"agg", "pdf", "ps", "svg", "pgf",
                                                               "cairo", "template"}:
@@ -48,8 +51,8 @@ def main():
     figs = geometry(shotdb.load(args.source), args.t)
     if args.save:
         for name, fig in figs.items():
-            fig.savefig(f"{args.save}_{name}.png", dpi=150)
-            print(f"  wrote {args.save}_{name}.png")
+            fig.savefig(f"{args.save}_{name}.{args.format}", dpi=150)
+            print(f"  wrote {args.save}_{name}.{args.format}")
     else:
         plt.show()
 
