@@ -7,7 +7,7 @@
                        BAR baratron (filled) and APG gauge (open)
 
   Figure 3 (upstream): ne, Te (Thomson) and Ti (CXRS) profiles at selected times,
-                       one column per time (x = rho, or dsep with --x dsep)
+                       one column per time (x = dru [mm] cut at --xmin, default -70; --x rho for rho)
 
 ne_core = Thomson line-average density (thomson_scattering/av_dens).
 Colour = baffle (from the shot's 'baffle' attribute), marker = shot.
@@ -90,18 +90,20 @@ def pressure_vs_necore(shots, t_range=(0.6, 1.6)):
     return fig
 
 
-def upstream_profiles(shots, times=(0.8, 1.0, 1.2), x="rho"):
-    return dp.profiles_ne_te_ti(shots, times, x=x, color_by="baffle")[0]
+def upstream_profiles(shots, times=(0.8, 1.0, 1.2), x="dsep", xmin=None):
+    """xmin: lower limit of the radial axis, in mm for x='dsep' (rho for x='rho')."""
+    return dp.profiles_ne_te_ti(shots, times, x=x, color_by="baffle",
+                                xrange=None if xmin is None else (xmin, None))[0]
 
 
-def compare(shots, t_range=(0.6, 1.6), times=(0.8, 1.0, 1.2), x="rho", save=None):
+def compare(shots, t_range=(0.6, 1.6), times=(0.8, 1.0, 1.2), x="dsep", xmin=None, save=None):
     """shots: list of shotdb.Shot (those without a SILO/NINO baffle are dropped)."""
     keep = [s for s in shots if s.baffle in shotdb.BAFFLE_COLORS]
     for s in shots:
         if s not in keep:
             print(f"  skip {s.label}: baffle '{s.baffle or '?'}' is neither NINO nor SILO")
     figs = {"power": power_vs_necore(keep, t_range), "pressure": pressure_vs_necore(keep, t_range),
-            "upstream": upstream_profiles(keep, times, x)}
+            "upstream": upstream_profiles(keep, times, x, xmin)}
     if save:
         for name, fig in figs.items():
             fig.savefig(f"{save}_{name}.png", dpi=150)
@@ -114,8 +116,11 @@ def main():
     ap.add_argument("--t-range", type=float, nargs=2, default=(0.6, 1.6), metavar=("T0", "T1"))
     ap.add_argument("--times", type=float, nargs="+", default=(0.8, 1.0, 1.2),
                     help="times [s] of the upstream profiles")
-    ap.add_argument("--x", choices=("rho", "dsep"), default="rho",
-                    help="radial coordinate of the upstream profiles (dsep drops Ti)")
+    ap.add_argument("--x", choices=("rho", "dsep"), default="dsep",
+                    help="radial coordinate of the upstream profiles: dsep = dru, distance to the "
+                         "separatrix at the midplane in mm (default, drops Ti), or rho")
+    ap.add_argument("--xmin", type=float, default=None,
+                    help="lower limit of the radial axis (mm for dsep, default -70; rho for rho)")
     ap.add_argument("--save", help="filename prefix: writes <prefix>_{power,pressure,upstream}.png")
     ap.add_argument("--ask", action="store_true",
                     help="with --save: show the figures first and save only if you answer y")
@@ -128,7 +133,8 @@ def main():
             raise SystemExit(f"matplotlib backend '{bk}' cannot open windows (no display?). "
                              "Use --save <prefix> and view the PNGs, ssh -X, or set "
                              "MPLBACKEND=TkAgg / QtAgg / MacOSX.")
-    figs = compare(shots, tuple(args.t_range), tuple(args.times), args.x,
+    xmin = args.xmin if args.xmin is not None else (-70.0 if args.x == "dsep" else None)
+    figs = compare(shots, tuple(args.t_range), tuple(args.times), args.x, xmin,
                    None if args.ask else args.save)
     if args.ask and args.save:
         plt.show(block=False)
