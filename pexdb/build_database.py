@@ -271,6 +271,49 @@ def d_lp(m):
             "outer_target": subset((probes >= 1) & (probes <= 42))}
 
 
+# Port each IR camera looks through: which poloidal axis the port *thickness* runs along.
+# HIR sits in the outer wall (thickness along R, width along Z); VIR in the top of the
+# vessel (thickness along Z, width along R).
+IR_PORT_THICKNESS_AXIS = {"HIR": "r", "VIR": "z"}
+
+
+def ir_cam_geometry(IR, cam):
+    """EdgeData.IR.geometry.<cam> (or .geom), or None."""
+    geom = next((getattr(IR, n) for n in ("geometry", "geom") if hasattr(IR, n)), None)
+    return next((getattr(geom, n) for n in (cam, cam.lower()) if hasattr(geom, n)), None)
+
+
+def ir_detector(IR, cam):
+    """Detector position {r, z} [m] from geometry.<cam>.Rd / .Zd, or None if absent."""
+    g = ir_cam_geometry(IR, cam)
+    try:
+        rd, zd = (float(np.squeeze(getattr(g, f))) for f in ("Rd", "Zd"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return {"r": np.array([rd]), "z": np.array([zd]), "units": "m"}
+
+
+def ir_port(IR, cam):
+    """Port geometry of an IR camera from EdgeData.IR.geometry.<cam> (fields Rp, Zp = centre
+    of the port, Dp = width, Lp = thickness, all in m). Returns None if absent/incomplete.
+
+    Output (consistent with the other geometry: arrays, `outline` as for the gauge ports):
+      port/{r, z}            centre            port/{width, thickness}
+      port/outline/{r, z}    the 4 corners of the port rectangle (closed contour)."""
+    g = ir_cam_geometry(IR, cam)
+    try:
+        rp, zp, dp, lp = (float(np.squeeze(getattr(g, f))) for f in ("Rp", "Zp", "Dp", "Lp"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    axis = IR_PORT_THICKNESS_AXIS[cam]
+    hr, hz = (lp / 2, dp / 2) if axis == "r" else (dp / 2, lp / 2)      # half sizes along r, z
+    return {"r": np.array([rp]), "z": np.array([zp]),
+            "width": np.array([dp]), "thickness": np.array([lp]), "units": "m",
+            "thickness_axis": axis,
+            "outline": {"r": np.array([rp - hr, rp + hr, rp + hr, rp - hr]),
+                        "z": np.array([zp - hz, zp - hz, zp + hz, zp + hz])}}
+
+
 def d_ir(m):
     IR = get(get(m, "EdgeData"), "IR")
     out = {}
@@ -281,6 +324,15 @@ def d_ir(m):
                       "power": resample(i.power, i.t, 0),
                       "qperp": resample(i.qperp, i.t, 1),   # (position, t)
                       "distance_separatrix_midplane": resample(i.dru, i.t, 1)}
+            port, det = ir_port(IR, k), ir_detector(IR, k)
+            if port:
+                out[k]["port"] = port
+            else:
+                print(f"  camera_ir/{k}: no port geometry (EdgeData.IR.geometry.{k}: Rp, Zp, Dp, Lp)")
+            if det:
+                out[k]["detector"] = det                  # as bolometer/detector: r, z
+            else:
+                print(f"  camera_ir/{k}: no detector position (EdgeData.IR.geometry.{k}: Rd, Zd)")
         except Missing as e:
             out[k] = Missing_group(str(e))
     return out

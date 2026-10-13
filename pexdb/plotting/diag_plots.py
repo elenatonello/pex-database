@@ -343,6 +343,29 @@ def _geometry_layers(s):
     def line(base, **st):
         return lambda ax, c: ax.plot(*_rz(s, base), color=c, **st)[0]
 
+    def ir_camera(cam, **st):
+        """IR target profile (thick line) plus, when stored: the outline of the port the
+        camera looks through (closed contour, transparent fill), the detector (marker)
+        and the field of view, a shaded triangle from the detector to the two ends of
+        the target profile."""
+        def draw(ax, c):
+            r, z = _rz(s, f"camera_ir/{cam}")
+            art = ax.plot(r, z, color=c, **st)[0]
+            if s.has(f"camera_ir/{cam}/port/outline/r"):
+                pr, pz = _rz(s, f"camera_ir/{cam}/port/outline")
+                ax.add_patch(plt.Polygon(np.column_stack([pr, pz]), closed=True, fc=c, ec=c,
+                                         alpha=0.5, lw=1.2))
+            if s.has(f"camera_ir/{cam}/detector/r"):
+                dr, dz = (float(v[0]) for v in _rz(s, f"camera_ir/{cam}/detector"))
+                ax.plot(dr, dz, "s", color=c, ms=6, mec="k", mew=0.6, zorder=5)
+                ok = np.isfinite(r) & np.isfinite(z)
+                if ok.sum() >= 2:                                  # first / last valid target point
+                    ends = np.array([[r[ok][0], z[ok][0]], [r[ok][-1], z[ok][-1]]])
+                    ax.add_patch(plt.Polygon(np.vstack([[dr, dz], ends]), closed=True, fc=c,
+                                             ec=c, alpha=0.18, lw=0.6, zorder=0))
+            return art
+        return draw
+
     def pressure(grp, **st):
         """Gauge ports: closed contour (edge) filled with a transparent colour, no markers."""
         def draw(ax, c):
@@ -390,19 +413,28 @@ def _geometry_layers(s):
         ("LP embedded", "langmuir_probes", "0.5",
          pts("langmuir_probes/embedded/position", marker=".", ms=2)),
         ("pressure gauge ports", "barometry", "tab:brown", pressure("pressure_gauges")),
-        ("IR HIR", "camera_ir", "darkcyan", line("camera_ir/HIR", lw=3, alpha=0.7)),
-        ("IR VIR", "camera_ir", "teal", line("camera_ir/VIR", lw=3, alpha=0.7)),
+        ("IR HIR", "camera_ir", "darkcyan", ir_camera("HIR", lw=3, alpha=0.7)),
+        ("IR VIR", "camera_ir", "teal", ir_camera("VIR", lw=3, alpha=0.7)),
         ("gas valve", "gas_injection", "tab:olive", valves),
         ("MANTIS FOV", "camera_visible", "tab:cyan", mantis),
     ]
 
 
-def plot_geometry(shots, t=1.0, with_equilibrium=True):
+def plot_geometry(shots, t=1.0, with_equilibrium=True, layers=None):
     """Poloidal cross-section per shot with the position / line of sight of every
     available diagnostic (Thomson, CXRS, FIR, bolometer, Langmuir probes,
     DSS lines of sight, pressure gauge ports, IR cameras, gas valve, MANTIS field of view), the
     wall and the LCFS at time t. Diagnostics missing in a shot are listed below
-    its panel."""
+    its panel.
+
+    layers: draw only these entries (None = all), by label: 'Thomson', 'CXRS',
+    'FIR chords', 'bolometer LOS', 'DSS LOS', 'LP outer target', 'LP inner target',
+    'LP embedded', 'pressure gauge ports', 'IR HIR', 'IR VIR', 'gas valve', 'MANTIS FOV'."""
+    if layers is not None:
+        known = [l[0] for l in _geometry_layers(shots[0])]
+        bad = [l for l in layers if l not in known]
+        if bad:
+            raise ValueError(f"unknown geometry layer(s) {bad}; choose from {known}")
     fig, axes = plt.subplots(1, len(shots), squeeze=False,
                              figsize=(4.4 * len(shots) + 0.5, 8))
     for ax, s in zip(axes[0], shots):
@@ -410,6 +442,8 @@ def plot_geometry(shots, t=1.0, with_equilibrium=True):
         pt.draw_wall(ax, s)
         missing = []
         for label, grp, color, draw in _geometry_layers(s):
+            if layers is not None and label not in layers:
+                continue
             try:
                 if not s.diagnostics.get(grp, False):
                     raise Unavailable(grp)
