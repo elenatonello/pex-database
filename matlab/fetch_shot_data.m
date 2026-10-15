@@ -1,12 +1,19 @@
-function S = fetch_shot_data(shot, baffle)
+function S = fetch_shot_data(shot, baffle, window, dtMhd)
 %FETCH_SHOT_DATA  Retrieve all experimental data needed by build_database.py for one shot.
 %   S = fetch_shot_data(shot) returns a struct with the fields
 %   CXRSdata, LPdata, EdgeData, FIRdata, heating, wall, shot
 %   (the same variables that used to be saved in STRUCTexp.mat).
 %   S = fetch_shot_data(shot, baffle) forces the baffle ('NINO'/'SILO');
 %   by default it is looked up in config/baffles.csv.
+%   S = fetch_shot_data(shot, baffle, window, dtMhd) with dtMhd > 0 also computes the MHD
+%   stored-energy derivative heating.HEATING.dEMHD / t_dMHD from LIUQE on [t0 t1] = window
+%   (default [0.6 1.0]) with step dtMhd [s] (see fetch_mhd_energy). Default dtMhd = 0: not
+%   computed (L-mode shots do not need it, and LIUQE at 0.1 ms is slow); build_pex_database
+%   fetches it separately, only for ELMy shots.
 
 if nargin < 2 || isempty(baffle), baffle = baffle_for_shot(shot); end
+if nargin < 3 || isempty(window), window = [0.6 1.0]; end
+if nargin < 4 || isempty(dtMhd),  dtMhd  = 0; end
 
 CXRSdata    = CXRS_load_MDS(shot, 1, 'result', [], 0, 0);
 LPdata      = LP_MDSdld(shot);
@@ -15,6 +22,13 @@ DSSdata_fit = DSS_GetFitResultsMDS(shot);
 EdgeData = get_edge_data(shot, [], 'l', {'TS', 'MANTIS', 'DSS', 'APG', 'BAR', 'VALVE', 'IR', 'BOLO'});
 FIRdata  = fir_getdata(shot);
 heating  = get_edge_data(shot, [], '', {'HEATING'});
+if dtMhd > 0
+    M = fetch_mhd_energy(shot, window, dtMhd);
+    if ~isempty(M)
+        heating.HEATING.t_dMHD = M.t_dMHD;
+        heating.HEATING.dEMHD  = M.dEMHD;
+    end
+end
 
 bolo_geom        = bolou_load_geometry(shot);
 [~, ~, apg_geom] = apg_ports(shot);

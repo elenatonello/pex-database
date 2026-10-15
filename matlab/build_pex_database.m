@@ -12,6 +12,21 @@ function failed = build_pex_database(shots, outDir, varargin)
 %     'Script'    <repo>/pexdb/build_database.py
 %     'Regime'    ''      'L' or 'H', forwarded as --regime= when SHOTINFO is missing
 %     'Baffle'    ''      force 'NINO' or 'SILO' for all shots (default: config/baffles.csv)
+%     'Mode'      'auto'  time base: 'auto' (default) = ELM-resolved base for ELMy H-mode shots,
+%                         detected from the data, else the 40-frame base; or force 'default' / 'elm'.
+%                         ELM base: window 0.6-1.0 s; heating, valve, pressure gauges and IR on a 0.1 ms
+%                         grid, all other diagnostics on a 5 ms grid. Use separate output folders for
+%                         ELM and L-mode databases if you force modes.
+%     'Elm'       false   shortcut for 'Mode','elm'
+%     'Window'    []      time window [t0 t1] [s]. If given, it is passed to build_database.py as
+%                         --t0 / --t1 and is also the window of the LIUQE dW_MHD/dt fetch. If empty
+%                         the database defaults apply and dW_MHD/dt is fetched over [0.6 1.0]
+%     'MhdStep'   1e-4    time step of dW_MHD/dt [s] (0.1 ms resolves the ELM energy loss)
+%
+%   dW_MHD/dt (LIUQE, slow) is only fetched for ELMy H-mode shots: the shot is first fetched without
+%   it, build_database.py --detect decides (from the divertor signals) whether it is ELMy, and only
+%   then LIUQE is run. With 'Mode','elm' it is always fetched, with 'default' never.
+%     'Args'      ''      extra arguments for build_database.py, e.g. '--t0=0.6 --t1=1.2 --dt-slow=5e-3'
 %
 %   Example:
 %     build_pex_database([89437 89837 88306], '/to/the/database');
@@ -22,6 +37,11 @@ addParameter(p, 'Python', 'python3');
 addParameter(p, 'Script', fullfile(fileparts(fileparts(mfilename('fullpath'))), 'pexdb', 'build_database.py'));
 addParameter(p, 'Regime', '');
 addParameter(p, 'Baffle', '');
+addParameter(p, 'Mode', 'auto');
+addParameter(p, 'Elm', false);
+addParameter(p, 'Args', '');
+addParameter(p, 'Window', []);
+addParameter(p, 'MhdStep', 1e-4);
 parse(p, varargin{:});
 o = p.Results;
 
@@ -36,15 +56,44 @@ for shot = shots(:)'
     end
 
     tmp = [tempname() '.mat'];
-    cleanup = onCleanup(@() delete_if_exists(tmp));    % removed even on error / Ctrl-C
+    tmpMhd = [tempname() '.mat'];
+    cleanup = onCleanup(@() delete_files({tmp, tmpMhd}));   % removed even on error / Ctrl-C
     try
         fprintf('[%d] fetching...\n', shot);
-        S = fetch_shot_data(shot, o.Baffle);
+        S = fetch_shot_data(shot, o.Baffle);           % without dW_MHD/dt: only ELMy shots need it
         save(tmp, '-struct', 'S', '-v7');              % -v7: readable by scipy.io.loadmat
         clear S                                        % free memory before calling python
 
-        cmd = sprintf('%s "%s" "%s" "%s"', o.Python, o.Script, tmp, outDir);
-        if ~isempty(o.Regime), cmd = [cmd ' --regime=' o.Regime]; end
+        mode = o.Mode;
+        if o.Elm, mode = 'elm'; end
+        regimeArg = '';
+        if ~isempty(o.Regime), regimeArg = [' --regime=' o.Regime]; end
+
+        % ELMy H-mode shots need dW_MHD/dt (LIUQE, slow): decide first, cheaply
+        if strcmp(mode, 'auto')
+            [~, out] = system(['LD_LIBRARY_PATH= ' sprintf('%s "%s" "%s" --detect', o.Python, o.Script, tmp) regimeArg]);
+            fprintf('%s', out);
+            needMhd = contains(out, 'ELMY=1');
+        else
+            needMhd = strcmp(mode, 'elm');
+        end
+        mhdArg = '';
+        if needMhd
+            win = o.Window;
+            if isempty(win), win = [0.6 1.0]; end
+            fprintf('[%d] ELMy: LIUQE dW_MHD/dt on %g-%g s, step %g s...\n', shot, win(1), win(2), o.MhdStep);
+            M = fetch_mhd_energy(shot, win, o.MhdStep);
+            if ~isempty(M)
+                save(tmpMhd, '-struct', 'M', '-v7');
+                mhdArg = [' --mhd="' tmpMhd '"'];
+            end
+        end
+
+        cmd = sprintf('%s "%s" "%s" "%s"%s --mode=%s%s', o.Python, o.Script, tmp, outDir, regimeArg, mode, mhdArg);
+        if ~isempty(o.Window)                           % explicit window: same for fetch and database
+            cmd = [cmd sprintf(' --t0=%g --t1=%g', o.Window(1), o.Window(2))];
+        end
+        if ~isempty(o.Args), cmd = [cmd ' ' o.Args]; end
         % MATLAB's bundled libstdc++ breaks system python -> blank LD_LIBRARY_PATH
         [status, out] = system(['LD_LIBRARY_PATH= ' cmd]);
         fprintf('%s', out);
@@ -61,6 +110,8 @@ if ~isempty(failed)
 end
 end
 
-function delete_if_exists(f)
-    if isfile(f), delete(f); end
+function delete_files(files)
+    for i = 1:numel(files)
+        if isfile(files{i}), delete(files{i}); end
+    end
 end
