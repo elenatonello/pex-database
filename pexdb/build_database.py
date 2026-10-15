@@ -662,6 +662,40 @@ ELM_COINCIDENCE = 3e-3         # [s] spikes of two signals closer than this are 
 ELM_MIN_COINCIDENCE = 0.4      # fraction of spikes that must coincide between two signals
 
 
+def _running_median(y, size):
+    """Centred running median (odd `size`), edges padded with the nearest value. Plain numpy, so
+    the builder does not depend on scipy.ndimage (fragile on some servers)."""
+    h = size // 2
+    pad = np.pad(y, h, mode="edge")
+    win = np.lib.stride_tricks.as_strided(pad, shape=(y.size, size), strides=(pad.strides[0],) * 2)
+    return np.median(win, axis=1)
+
+
+def _find_peaks(x, height, distance):
+    """Indices of the local maxima of x with x >= height, keeping the tallest of any group closer
+    than `distance` samples (same rule as scipy.signal.find_peaks(x, height=, distance=); a flat top
+    is reported at its first sample). Plain numpy: scipy.signal pulls in scipy.stats / integrate,
+    which break on servers with an old system numpy."""
+    x = np.asarray(x, float)
+    if x.size < 3:
+        return np.array([], int)
+    pk = np.flatnonzero((x[1:-1] > x[:-2]) & (x[1:-1] >= x[2:])) + 1
+    pk = pk[x[pk] >= height]
+    keep = np.ones(pk.size, bool)
+    for i in np.argsort(-x[pk], kind="stable"):                   # tallest first
+        if not keep[i]:
+            continue
+        k = i - 1
+        while k >= 0 and pk[i] - pk[k] < distance:
+            keep[k] = False
+            k -= 1
+        k = i + 1
+        while k < pk.size and pk[k] - pk[i] < distance:
+            keep[k] = False
+            k += 1
+    return pk[keep]
+
+
 def spike_train(t, y, sign=1.0, window=None):
     """ELM-like spikes in y(t) within `window` (default DETECT_WINDOW; sign=-1 for negative spikes).
 
@@ -671,8 +705,6 @@ def spike_train(t, y, sign=1.0, window=None):
     of the residuals). Returns a dict with the spike times, their number, frequency (from the median
     interval), regularity (cv) and 'ok' (True if it looks like an ELM train), or a dict with 'reason'
     if the signal cannot be used."""
-    from scipy.ndimage import median_filter
-    from scipy.signal import find_peaks
     y, t = align(np.asarray(y, float).ravel(), np.asarray(t, float).ravel())
     good = np.isfinite(t) & np.isfinite(y)
     t, y = t[good], y[good]
@@ -696,14 +728,14 @@ def spike_train(t, y, sign=1.0, window=None):
         yu = np.interp(tu, tu[np.isfinite(yu)], yu[np.isfinite(yu)])
     else:
         yu = sign * np.interp(tu, t, y)
-    r = yu - median_filter(yu, size=25, mode="nearest")
+    r = yu - _running_median(yu, 25)
     # noise level from the lower half of the residuals only: ELM spikes are positive, so a high
     # ELM duty cycle cannot inflate it (a plain MAD would, and hide the spikes)
     low = r[r < np.median(r)]
     sigma = 1.4826 * np.median(np.abs(low - np.median(r))) if low.size > 10 else 0.0
     if not sigma > 0:
         return {"ok": False, "reason": "no fluctuations"}
-    pk, _ = find_peaks(r, height=ELM_K * sigma, distance=max(1, int(round(ELM_MIN_SEP / dt))))
+    pk = _find_peaks(r, ELM_K * sigma, max(1, int(round(ELM_MIN_SEP / dt))))
     times = tu[pk]
     times = times[(times >= w0) & (times <= w1)]
     n = times.size

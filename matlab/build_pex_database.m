@@ -71,8 +71,9 @@ for shot = shots(:)'
 
         % ELMy H-mode shots need dW_MHD/dt (LIUQE, slow): decide first, cheaply
         if strcmp(mode, 'auto')
-            [~, out] = system(['LD_LIBRARY_PATH= ' sprintf('%s "%s" "%s" --detect', o.Python, o.Script, tmp) regimeArg]);
+            [st, out] = system(['LD_LIBRARY_PATH= ' sprintf('%s "%s" "%s" --detect', o.Python, o.Script, tmp) regimeArg]);
             fprintf('%s', out);
+            if st ~= 0, error('ELM detection (build_database.py --detect) failed with status %d', st); end
             needMhd = contains(out, 'ELMY=1');
         else
             needMhd = strcmp(mode, 'elm');
