@@ -24,7 +24,7 @@ from pexdb.plotting import diag_plots as dp
 SETS = {
     "plasma": ["Thomson", "CXRS", "LP outer target", "LP inner target", "LP embedded", "FIR chords",
                "IR HIR", "IR VIR"],
-    "radiation": ["bolometer LOS", "MANTIS FOV", "DSS LOS", "MANTIS FOV", "pressure gauge ports", "gas valve"],
+    "radiation": ["bolometer LOS", "MANTIS FOV", "DSS LOS", "pressure gauge ports", "gas valve"],
 }
 
 
