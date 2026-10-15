@@ -25,9 +25,15 @@ Layout: a dict leaf is an HDF5 group, an array is a dataset, a string/number
 is an attribute-free scalar dataset. Time is the first axis, except where
 noted in the `layout` attribute of a group or in the docs below.
 
-Usage: python3 -m pexdb.build_database STRUCTexp.mat [out_dir] [--strict] [--regime=L|H]
-(--regime overrides/sets the confinement regime when SHOTINFO is absent; for L-mode
-shots the NBI power is stored as a constant mean over the window, see mean_power()).
+Usage: python3 -m pexdb.build_database STRUCTexp.mat [out_dir] [--strict] [--mode=auto|default|elm]
+         [--regime=L|H] [--t0=0.6] [--t1=1.0] [--dt-fast=1e-4] [--dt-slow=5e-3] [--mhd=mhd.mat]
+       python3 -m pexdb.build_database STRUCTexp.mat --detect      # prints ELMY=0|1 only
+The time base is chosen automatically (--mode=auto, default): ELMy H-mode shots (detected from the
+data, see detect_elms) get the ELM-resolved base (0.6-1.0 s; heating, valve, pressure gauges and IR on a
+0.1 ms grid, everything else on a 5 ms grid, see configure()); all others the 40-frame base.
+--mode=elm / default force one; --elm is the same as --mode=elm. --regime forces the L/H label (and
+the base when --mode=auto). For L-mode shots the NBI power is stored as a constant mean over the
+window (see mean_power()).
 Output: <out_dir>/shot_<shot>.h5
 """
 import os
@@ -37,10 +43,67 @@ import numpy as np
 import h5py
 import scipy.io as sio
 
+# Time base. The functions below read these module globals at call time.
+#   default mode: one grid for every diagnostic (L-mode: 40 frames, 0.6-1.6 s, 10 ms window)
+#   ELM mode    : two nested grids on a shorter window (see configure()): a fast grid for the
+#                 fast diagnostics and a coarser slow grid for the slow ones, whose samples are
+#                 held on the nearest frames instead of being interpolated.
 T_START, T_END, N_FRAMES = 0.6, 1.6, 40
 T_FRAMES = np.linspace(T_START, T_END, N_FRAMES)
 DT = T_FRAMES[1] - T_FRAMES[0]            # frame spacing
 WINDOW = 0.010                            # total averaging window width [s], centred on each frame
+MODE = "default"                          # "default" or "elm"
+CURRENT_TIER = "fast"                     # grid in use: "fast" or "slow"
+GRIDS = {}                                # tier -> (frames, window); filled by configure()
+# ELM mode: only these are on the fast grid (HEATING, VALVE, BAR, APG, IR, plus the probe Jsat); all the
+# others are on the slow grid. Of those, the ones sampled slower than the slow frames hold their
+# samples (nearest-sample hold, t_sample / measured); the faster ones are averaged in each bin.
+SLOW_DIAGNOSTICS = ("BOLO", "FIR", "LIUQE", "TS", "CXRS", "MANTIS", "DSS")
+HOLD_DIAGNOSTICS = ("TS", "CXRS", "IR", "MANTIS", "DSS")
+CURRENT_HOLD = False                      # True while converting a HOLD_DIAGNOSTICS entry
+
+
+def configure(mode="default", t_start=None, t_end=None, dt_fast=1e-4, dt_slow=5e-3):
+    """Set the time grids. mode='default': one grid (the module defaults, or t_start/t_end with
+    40 frames). mode='elm': fast grid with step dt_fast and slow grid with step dt_slow between
+    t_start and t_end (defaults 0.6-1.0 s, 0.1 ms -> 4001 frames and 5 ms -> 81 frames); window =
+    frame step (contiguous bins). dt_slow should be a multiple of dt_fast so the slow frames are a
+    subset of the fast ones."""
+    global MODE, T_START, T_END, GRIDS
+    MODE = mode
+    if mode == "elm":
+        T_START = 0.6 if t_start is None else t_start
+        T_END = 1.0 if t_end is None else t_end
+        GRIDS = {}
+        for tier, dt in (("fast", dt_fast), ("slow", dt_slow)):
+            n = int(round((T_END - T_START) / dt)) + 1
+            GRIDS[tier] = (np.linspace(T_START, T_END, n), dt)
+        if abs(dt_slow / dt_fast - round(dt_slow / dt_fast)) > 1e-6:
+            print(f"  WARNING: dt_slow ({dt_slow}) is not a multiple of dt_fast ({dt_fast})")
+    else:
+        T_START = 0.6 if t_start is None else t_start
+        T_END = 1.6 if t_end is None else t_end
+        GRIDS = {tier: (np.linspace(T_START, T_END, 40), 0.010) for tier in ("fast", "slow")}
+    set_grid("fast")
+
+
+def set_hold(flag):
+    global CURRENT_HOLD
+    CURRENT_HOLD = bool(flag)
+
+
+def set_grid(tier):
+    """Make `tier` ('fast' or 'slow') the active grid for the d_* functions."""
+    global CURRENT_TIER, T_FRAMES, N_FRAMES, DT, WINDOW
+    if not GRIDS:
+        return
+    CURRENT_TIER = tier
+    T_FRAMES, WINDOW = GRIDS[tier]
+    N_FRAMES = len(T_FRAMES)
+    DT = T_FRAMES[1] - T_FRAMES[0]
+
+
+configure("default")                      # default grid until configure() is called
 
 
 class Missing(Exception):
@@ -51,6 +114,24 @@ MIN_SAMPLES_PER_WINDOW = 2     # window average only if the window holds >= this
 _METHOD_LOG = []               # (method, native step) of every resampling call; see build()
 
 
+_ALIGN_NOTED = set()
+
+
+def align(y, t, axis=0):
+    """Trim `y` (along `axis`) and `t` to their common length when they differ by a few samples
+    (some traces come with one value more than time stamps, e.g. dEMHD); the extra samples at the
+    end are dropped. Larger mismatches are left alone (they will raise)."""
+    y, t = np.asarray(y), np.asarray(t).ravel()
+    n = y.shape[axis] if y.ndim else 0
+    if n != t.size and y.ndim and abs(n - t.size) <= 3 and min(n, t.size) > 0:
+        k = min(n, t.size)
+        if (n, t.size) not in _ALIGN_NOTED:
+            _ALIGN_NOTED.add((n, t.size))
+            print(f"  note: trace with {n} values but {t.size} time stamps: trimmed to {k}")
+        return np.take(y, np.arange(k), axis=axis), t[:k]
+    return y, t
+
+
 def native_step(t):
     """Median sampling step of the time vector [s] (inf if it cannot be determined)."""
     d = np.diff(np.asarray(t, dtype=float).ravel())
@@ -58,22 +139,83 @@ def native_step(t):
     return float(np.median(d)) if d.size else np.inf
 
 
-def resample(arr, t, axis, method="auto"):
-    """Resample `arr` along `axis` (native times `t`) onto T_FRAMES.
+def held_index(t):
+    """Index of the native sample nearest to each frame (-1 if farther than 2 native steps,
+    i.e. across a gap in the time vector). Uses the time vector only, not the values."""
+    t = np.asarray(t, dtype=float).ravel()
+    n = t.size
+    p = np.searchsorted(t, T_FRAMES)
+    left, right = np.clip(p - 1, 0, n - 1), np.clip(p, 0, n - 1)
+    dl, dr = np.abs(T_FRAMES - t[left]), np.abs(t[right] - T_FRAMES)
+    j = np.where(dl <= dr, left, right)
+    j[np.minimum(dl, dr) > 2 * native_step(t)] = -1
+    return j
 
-    method='auto' (default) picks the method from the native sampling step:
-      window average  if the +-WINDOW/2 window holds >= MIN_SAMPLES_PER_WINDOW samples
-                      (NaN-aware mean of the samples in [t - WINDOW/2, t + WINDOW/2));
-      interpolation   otherwise (slow diagnostic, e.g. TS 10-25 ms, CXRS, DSS): a
-                      window would often contain no sample at all, see interpolate().
-    'mean' / 'interpolate' force one of them."""
+
+def hold(arr, t, axis):
+    """Nearest-sample hold onto T_FRAMES: each frame takes the value of the native sample
+    closest in time (repeating it over the frames around that sample). No interpolation,
+    so values before and after an ELM are never mixed. Frames farther than 2 native steps
+    from any sample are NaN. See sample_info() for the matching `t_sample` / `measured`."""
     arr = np.asarray(arr, dtype=float)
     t = np.asarray(t, dtype=float).ravel()
     if arr.size == 0 or t.size == 0:
         raise Missing("empty array")
+    _METHOD_LOG.append(("nearest-sample hold", native_step(t)))
+    j = held_index(t)
+    a = np.moveaxis(arr, axis, 0)
+    out = np.full((N_FRAMES,) + a.shape[1:], np.nan)
+    ok = j >= 0
+    out[ok] = a[j[ok]]
+    return np.moveaxis(out, 0, axis)
+
+
+def sample_info(t):
+    """For slow diagnostics in ELM mode: {'t_sample', 'measured'} describing the held data.
+      t_sample  time [s] of the native sample each frame holds (NaN if none)
+      measured  1 on the single frame nearest to each sample, 0 on its repeats; use it so that
+                statistics / error bars do not count one sample many times.
+    Empty dict outside ELM mode."""
+    if MODE != "elm" or not CURRENT_HOLD:
+        return {}
+    t = np.asarray(t, dtype=float).ravel()
+    if native_step(t) / WINDOW < 0.5:                      # averaged in bins: nothing is repeated
+        return {}
+    j = held_index(t)
+    ts = np.where(j >= 0, t[np.clip(j, 0, t.size - 1)], np.nan)
+    owner = np.rint((ts - T_FRAMES[0]) / DT)                       # frame nearest to the sample
+    measured = (j >= 0) & (owner == np.arange(N_FRAMES)) & (np.abs(ts - T_FRAMES) <= DT / 2 + 1e-9)
+    return {"t_sample": ts, "measured": measured.astype(np.uint8)}
+
+
+def resample(arr, t, axis, method="auto"):
+    """Resample `arr` along `axis` (native times `t`) onto T_FRAMES.
+
+    method='auto' (default) picks the method from the native sampling step (default mode):
+      window average  if the +-WINDOW/2 window holds >= MIN_SAMPLES_PER_WINDOW samples
+                      (NaN-aware mean of the samples in [t - WINDOW/2, t + WINDOW/2));
+      interpolation   otherwise (slow diagnostic, e.g. TS 10-25 ms, CXRS, DSS): a
+                      window would often contain no sample at all, see interpolate().
+    'mean' / 'interpolate' / 'hold' force one of them; 'slow' = hold in ELM mode, interpolate
+    otherwise. In ELM mode, 'auto' on the slow grid means hold."""
+    arr = np.asarray(arr, dtype=float)
+    t = np.asarray(t, dtype=float).ravel()
+    if arr.size == 0 or t.size == 0:
+        raise Missing("empty array")
+    arr, t = align(arr, t, axis)
     step = native_step(t)
+    if method == "slow":
+        method = "hold" if MODE == "elm" else "interpolate"
+    if method == "auto" and MODE == "elm":
+        # average when the diagnostic is much faster than the bins; otherwise keep real samples:
+        # nearest-sample hold for the diagnostics in HOLD_DIAGNOSTICS (never mixes samples before
+        # and after an ELM), linear interpolation for the smooth ones (heating, pressure)
+        ratio = step / WINDOW
+        method = "mean" if ratio < 0.5 else "hold" if CURRENT_HOLD else "interpolate"
     if method == "auto":
         method = "mean" if round(WINDOW / step, 6) >= MIN_SAMPLES_PER_WINDOW else "interpolate"
+    if method == "hold":
+        return hold(arr, t, axis)
     if method == "interpolate":
         return interpolate(arr, t, axis)
     _METHOD_LOG.append(("window average", step))
@@ -86,6 +228,11 @@ def resample(arr, t, axis, method="auto"):
                 warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN slices
                 out[i] = np.nanmean(arr[sel], axis=0)
     return np.moveaxis(out, 0, axis)
+
+
+def resample_slow(arr, t, axis):
+    """Slow diagnostic: nearest-sample hold in ELM mode, linear interpolation otherwise."""
+    return resample(arr, t, axis, method="slow")
 
 
 def interpolate(arr, t, axis):
@@ -280,7 +427,8 @@ def d_ts(m):
                      "ne_u", "dne_u", "te_u", "dte_u"], s.t, 0),
             "distance_separatrix_midplane": resample(s.dru, s.t, 0),
             # line-averaged density computed from TS; same name as the FIR quantity
-            "av_dens": resample(s.nel, s.t, 0)}
+            "av_dens": resample(s.nel, s.t, 0),
+            **sample_info(s.t)}
 
 
 def d_lp(m):
@@ -294,9 +442,15 @@ def d_lp(m):
     pos = np.asarray(L.pos)
     t_lp = crop(L.time, L.time, 0)[1]
 
+    fast = MODE == "elm" and hasattr(L, "Jsat2") and hasattr(L, "time2")
+
     def subset(sel):
         d = {"probes": probes[sel],
              "position": {"r": pos[sel, 0], "z": pos[sel, 1]}}
+        if fast:                       # 1 ms ion saturation current density, on the fast grid
+            d["fast"] = {"t": T_FRAMES,
+                         "j_i_saturation": resample(np.asarray(L.Jsat2)[sel], L.time2, 1),
+                         "j_i_saturation_sigma": resample(np.asarray(L.Jsat2_std)[sel], L.time2, 1)}
         for out_n, arr in [("b_field_angle", L.ang),
                            ("distance_separatrix_midplane", L.dsep_mid),
                            ("t_e", fit.Te), ("n_e", fit.dens),
@@ -363,7 +517,8 @@ def d_ir(m):
             out[k] = {"t": T_FRAMES, "r": i.r, "z": i.z,
                       "power": resample(i.power, i.t, 0),
                       "qperp": resample(i.qperp, i.t, 1),   # (position, t)
-                      "distance_separatrix_midplane": resample(i.dru, i.t, 1)}
+                      "distance_separatrix_midplane": resample(i.dru, i.t, 1),
+                      **sample_info(i.t)}
             port, det = ir_port(IR, k), ir_detector(IR, k)
             if port:
                 out[k]["port"] = port
@@ -422,7 +577,8 @@ def d_mantis(m):
                   # MATLAB: patch(r_values', z_values', emi(:,it)')
                   "grid": {"r_values": g.R_values, "z_values": g.Z_values,
                            "r_mean": g.R_mean, "z_mean": g.Z_mean, "area": g.Area},
-                  **rs(c, ["lInner", "sFrontInner", "lOuter", "sFrontOuter"], c.t, 0)}
+                  **rs(c, ["lInner", "sFrontInner", "lOuter", "sFrontOuter"], c.t, 0),
+                  **sample_info(c.t)}
     if not out:
         raise Missing("no cameras")
     return out
@@ -441,15 +597,16 @@ def d_liuqe(m):
 
 
 def d_cxrs(m):
-    # slow diagnostic (24 ms sampling): linear interpolation, not window average
+    # slow diagnostic (24 ms sampling): interpolation (default mode) or nearest-sample hold (ELM mode)
     cd = get(m, "CXRSdata")
     C = get(cd, "calc")
     out = {"t": T_FRAMES, "r": C.R, "z": C.Z,
-           "rho": interpolate(C.rho, C.time, 1)}
+           "rho": resample_slow(C.rho, C.time, 1)}
     for q_ in ("ni", "Ti", "vi"):                          # (channel, t)
-        out[q_] = {"data": interpolate(getattr(C, q_), C.time, 1),
-                   "error": interpolate(getattr(C, "err_" + q_), C.time, 1),
+        out[q_] = {"data": resample_slow(getattr(C, q_), C.time, 1),
+                   "error": resample_slow(getattr(C, "err_" + q_), C.time, 1),
                    "units": str(getattr(C, q_ + "_units"))}
+    out.update(sample_info(C.time))
     return out
 
 
@@ -487,6 +644,213 @@ def d_wall(m):
 
 REGIME_OVERRIDE = None     # 'L' / 'H', set by --regime=L on the command line
 AUX_MIN_POWER = 5e3        # [W] a source is named in the description only above this mean power
+
+
+# --------------------------------------------------------------------------
+# ELM detection: is this shot an ELMy H-mode? (decided from the data, no input needed)
+# --------------------------------------------------------------------------
+DETECT_WINDOW = (0.6, 1.6)     # [s] analysed (clipped to what each signal covers, >= MIN_COVERAGE)
+MIN_COVERAGE = 0.1             # [s]
+ELM_K = 5.0                    # spike threshold, in robust sigmas of the high-passed signal
+ELM_MIN_SEP = 3e-3             # [s] minimum separation between two ELMs
+ELM_FREQ_RANGE = (20.0, 600.0) # [Hz] plausible ELM frequencies
+ELM_MIN_COUNT = 8              # at least this many spikes
+ELM_MAX_CV = 0.6               # max coefficient of variation of the intervals (a spike train is
+                               # fairly regular; random intermittent turbulence has CV ~ 1)
+ELM_STRONG = (15, 0.4)         # (min spikes, max cv): a train this clean is convincing on its own
+ELM_COINCIDENCE = 3e-3         # [s] spikes of two signals closer than this are the same event
+ELM_MIN_COINCIDENCE = 0.4      # fraction of spikes that must coincide between two signals
+
+
+def spike_train(t, y, sign=1.0, window=None):
+    """ELM-like spikes in y(t) within `window` (default DETECT_WINDOW; sign=-1 for negative spikes).
+
+    The signal is put on a uniform 1 ms grid (point-sampled if it is slower than that, maximum of
+    each 1 ms bin if it is faster, so that narrow spikes survive), a running median (25 ms) is
+    subtracted and spikes above ELM_K sigmas are picked (sigma: robust noise level of the lower half
+    of the residuals). Returns a dict with the spike times, their number, frequency (from the median
+    interval), regularity (cv) and 'ok' (True if it looks like an ELM train), or a dict with 'reason'
+    if the signal cannot be used."""
+    from scipy.ndimage import median_filter
+    from scipy.signal import find_peaks
+    y, t = align(np.asarray(y, float).ravel(), np.asarray(t, float).ravel())
+    good = np.isfinite(t) & np.isfinite(y)
+    t, y = t[good], y[good]
+    if t.size < 50:
+        return {"ok": False, "reason": "too few samples"}
+    w0, w1 = DETECT_WINDOW if window is None else window
+    w0, w1 = max(w0, t[0]), min(w1, t[-1])                   # what the signal covers
+    if w1 - w0 < MIN_COVERAGE:
+        return {"ok": False, "reason": "signal does not cover the window"}
+    step = np.median(np.diff(t))
+    if step > 2e-3:
+        return {"ok": False, "reason": f"too slow ({step * 1e3:.1f} ms) to resolve ELMs"}
+    dt = 1e-3
+    tu = np.arange(w0 - 0.05, w1 + 0.05, dt)                 # margin for the running median
+    if step < 0.9e-3:                                        # faster than 1 ms: keep the spike maxima
+        k = np.clip(np.floor((t - tu[0]) / dt).astype(int), -1, tu.size)
+        ys = sign * y
+        yu = np.full(tu.size, np.nan)
+        ok = (k >= 0) & (k < tu.size)
+        np.fmax.at(yu, k[ok], ys[ok])
+        yu = np.interp(tu, tu[np.isfinite(yu)], yu[np.isfinite(yu)])
+    else:
+        yu = sign * np.interp(tu, t, y)
+    r = yu - median_filter(yu, size=25, mode="nearest")
+    # noise level from the lower half of the residuals only: ELM spikes are positive, so a high
+    # ELM duty cycle cannot inflate it (a plain MAD would, and hide the spikes)
+    low = r[r < np.median(r)]
+    sigma = 1.4826 * np.median(np.abs(low - np.median(r))) if low.size > 10 else 0.0
+    if not sigma > 0:
+        return {"ok": False, "reason": "no fluctuations"}
+    pk, _ = find_peaks(r, height=ELM_K * sigma, distance=max(1, int(round(ELM_MIN_SEP / dt))))
+    times = tu[pk]
+    times = times[(times >= w0) & (times <= w1)]
+    n = times.size
+    out = {"ok": False, "times": times, "n": n, "frequency": n / (w1 - w0), "cv": np.nan}
+    if n >= 3:
+        iv = np.diff(times)
+        out["cv"] = float(np.std(iv) / np.mean(iv))
+        out["frequency"] = float(1.0 / np.median(iv))        # ELMs may only fill part of the window
+    out["ok"] = bool(n >= ELM_MIN_COUNT and ELM_FREQ_RANGE[0] <= out["frequency"] <= ELM_FREQ_RANGE[1]
+                     and out["cv"] <= ELM_MAX_CV)
+    if not out["ok"]:
+        out["reason"] = f"{n} spikes ({out['frequency']:.0f} Hz), cv {out['cv']:.2f}: not an ELM train"
+    return out
+
+
+def _elm_signals(m):
+    """(name, t, y, sign, divertor) of the signals that can show ELMs, for those present in `m`.
+    Divertor signals are preferred: core signals (dW/dt) also respond to sawteeth."""
+    sigs = []
+    try:                                                     # fast gauges near the target / midplane
+        A = m.EdgeData.APG
+        for name, field in (("APG divertor pressure", "p_div"), ("APG midplane pressure", "p_mic")):
+            if hasattr(A, field):
+                sigs.append((name, np.asarray(A.t, float), np.asarray(getattr(A, field), float), 1.0, True))
+    except Exception:
+        pass
+    try:                                                     # IR cameras: power on the target (fast in some shots)
+        for cam in ("hir", "vir"):
+            c = getattr(m.EdgeData.IR, cam)
+            if getattr(c, "available", 1) != 0 and hasattr(c, "power"):
+                sigs.append((f"IR {cam.upper()} power", np.asarray(c.t, float), np.asarray(c.power, float), 1.0, True))
+    except Exception:
+        pass
+    L = getattr(m, "LPdata", None)
+    try:                                                     # outer-target ion saturation current
+        probes = np.asarray(L.probes).astype(int)
+        t = np.asarray(L.time2, float)
+        k = (t >= DETECT_WINDOW[0]) & (t <= DETECT_WINDOW[1])
+        idx = np.flatnonzero((probes >= 1) & (probes <= 42))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)                # all-NaN probes
+            med = np.array([np.nanmedian(np.asarray(L.Jsat2)[i][k]) for i in idx])
+            top = idx[np.argsort(-np.nan_to_num(med, nan=-np.inf))[:3]]    # the 3 probes nearest the strike point
+            sigs.append(("Jsat outer target", t, np.nanmean(np.asarray(L.Jsat2)[top], axis=0), 1.0, True))
+    except Exception:
+        pass
+    try:                                                     # divertor radiated power
+        b = m.EdgeData.BOLO
+        sigs.append(("bolometer divertor power", np.asarray(b.t, float), np.asarray(b.p_div, float), 1.0, True))
+    except Exception:
+        pass
+    try:                                                     # stored-energy loss, dW_MHD/dt (core)
+        h = m.heating.HEATING
+        if np.size(h.t_dMHD) == np.size(h.dEMHD):            # a mismatched pair means a wrong time vector
+            sigs.append(("dEMHD", np.asarray(h.t_dMHD, float), np.asarray(h.dEMHD, float), -1.0, False))
+    except Exception:
+        pass
+    return sigs
+
+
+ELM_ENERGY_TSTAT = -5.0        # mean W_MHD drop across the ELMs must be this many standard errors below 0
+
+
+def elm_energy_drop(times, m):
+    """Independent physical check that spikes at `times` are ELMs: the stored energy W_MHD drops
+    across an ELM. Mean of (W after - W before) over the events, its t-statistic, the fraction of
+    events with a drop, and the mean drop relative to W. None if W_MHD (heating.HEATING.EMHD with
+    a consistent t_MHD) is not available. Random times give t ~ 0 +- 1 (min about -4)."""
+    try:
+        h = m.heating.HEATING
+        tw, w = np.asarray(h.t_MHD, float).ravel(), np.asarray(h.EMHD, float).ravel()
+        if tw.size != w.size or tw.size < 50 or len(times) < 5:
+            return None
+    except Exception:
+        return None
+    d = []
+    for tk in np.asarray(times, float):
+        a = (tw >= tk - 4e-3) & (tw <= tk - 0.5e-3)
+        b = (tw >= tk + 0.5e-3) & (tw <= tk + 3e-3)
+        if a.sum() >= 2 and b.sum() >= 2:
+            d.append(np.nanmean(w[b]) - np.nanmean(w[a]))
+    d = np.array(d)
+    if d.size < 5 or not np.std(d, ddof=1) > 0:
+        return None
+    k = (tw >= np.min(times)) & (tw <= np.max(times))
+    return {"n": int(d.size), "mean_drop": float(d.mean()),
+            "tstat": float(d.mean() / (d.std(ddof=1) / np.sqrt(d.size))),
+            "fraction_down": float(np.mean(d < 0)),
+            "relative": float(d.mean() / np.nanmean(w[k])) if k.any() else np.nan}
+
+
+def detect_elms(m):
+    """Is this an ELMy H-mode? Looks for a regular train of spikes (ELMs, 20-600 Hz) in divertor
+    signals (fast pressure gauges, IR power, ion saturation current, radiated power) and in dW_MHD/dt, within
+    DETECT_WINDOW.
+
+    ELMy if at least two signals show an ELM train and their spikes coincide (ELM_MIN_COINCIDENCE),
+    or if a single divertor signal shows a very clean train (ELM_STRONG), or if it is the only usable
+    signal. Heating power is not used, so high-power L-modes are not mistaken for H-modes.
+    Returns {'elmy', 'frequency' [Hz], 'times' [s] (of the best signal), 'signals': {name: result},
+    'n_available', 'n_flagged', 'summary'}; cached on `m`."""
+    if hasattr(m, "_elm_detection"):
+        return m._elm_detection
+    sigs = _elm_signals(m)
+    res = {name: spike_train(t, y, sg) for name, t, y, sg, _ in sigs}
+    divertor = {name: dv for name, _, _, _, dv in sigs}
+    avail = {k: v for k, v in res.items() if "times" in v}          # usable (even if no ELMs)
+    flagged = {k: v for k, v in avail.items() if v["ok"]}
+    elmy, best, energy = False, None, None
+    kinds = {k: ("pressure" if k.startswith("APG") else "ir" if k.startswith("IR") else
+                 "jsat" if k.startswith("Jsat") else "bolometer" if k.startswith("bolo") else "energy")
+             for k in res}
+    if flagged:
+        best = max(flagged, key=lambda k: flagged[k]["n"])
+        energy = elm_energy_drop(flagged[best]["times"], m)
+        confirmed = energy is not None and energy["tstat"] <= ELM_ENERGY_TSTAT
+        coincide = False
+        if len(flagged) >= 2:
+            others = [k for k in flagged if k != best and kinds[k] != kinds[best]]
+            if others:
+                tb = flagged[best]["times"]
+                co = max(np.mean([np.min(np.abs(flagged[k]["times"] - x)) <= ELM_COINCIDENCE
+                                  for x in tb]) for k in others)
+                flagged[best]["coincidence"] = float(co)
+                coincide = co >= ELM_MIN_COINCIDENCE
+        # evidence: two different kinds of signal agreeing, or one train confirmed by the energy loss;
+        # without any energy data a single very clean divertor train (or the only usable signal) is
+        # accepted; a train whose events show NO energy loss is not taken for ELMs
+        if energy is None:
+            elmy = coincide or len(avail) == 1 or any(
+                divertor[k] and v["n"] >= ELM_STRONG[0] and v["cv"] <= ELM_STRONG[1] for k, v in flagged.items())
+        else:
+            elmy = confirmed or (coincide and energy["tstat"] <= -2.0)
+    parts = [f"{k}: {v['n']} spikes, {v['frequency']:.0f} Hz, cv {v['cv']:.2f}" if v.get("ok")
+             else f"{k}: no ({v.get('reason', '?')})" for k, v in res.items()]
+    if energy is not None:
+        parts.append(f"energy: W_MHD drops {-1e-3 * energy['mean_drop']:.2f} kJ per ELM "
+                     f"({-100 * energy['relative']:.1f}%), t={energy['tstat']:.1f}")
+    out = {"elmy": bool(elmy), "n_available": len(avail), "n_flagged": len(flagged), "energy": energy,
+           "signals": res, "summary": "; ".join(parts) or "no usable fast signal",
+           "frequency": float(np.median([flagged[k]["frequency"] for k in flagged])) if elmy else np.nan,
+           "times": flagged[best]["times"] if (elmy and best) else np.array([])}
+    try:
+        m._elm_detection = out
+    except Exception:
+        pass
+    return out
 
 
 def heating_means(m):
@@ -535,9 +899,12 @@ def shot_info(m):
       date         from analysis timestamps (see shot_date)
       heating_mean_{ohmic,ecrh,nbi}  mean powers [W] over the analysis window
 
-    Regime (priority: --regime on the command line > SHOTINFO > heating power):
-    by heating power, the shot is 'Ohmic L-mode' if the auxiliary power (ECRH + NBI)
-    is below the ohmic power, otherwise H-mode ('NBI H-mode', 'ECRH H-mode', ...).
+    Regime (priority: --regime on the command line > SHOTINFO > ELM detection > heating power):
+    ELM detection (detect_elms) looks for a train of ELMs in divertor signals: ELMy -> 'H'
+    ('ELMy H-mode (NBI)', ...), none -> 'L' ('Ohmic L-mode', or 'heated L-mode (no ELMs)' when the
+    auxiliary power exceeds the ohmic power). Only if no usable fast signal exists, the heating
+    power decides: auxiliary (ECRH + NBI) below ohmic = L-mode, else H-mode.
+    Also stored: elmy, elm_frequency [Hz], elm_detection (text report).
     """
     info = {}
     t_end = getattr(getattr(m, "EdgeData", None), "tend", None)
@@ -567,6 +934,23 @@ def shot_info(m):
         auto_regime, auto_desc = "", ""
 
     regime, source = auto_regime, "heating power (ECRH + NBI below ohmic = L-mode, else H-mode)"
+    det = detect_elms(m)
+    on = [n for n, k in (("NBI", "nbi"), ("ECRH", "ecrh")) if pm[k] > AUX_MIN_POWER and pm[k] >= 0.2 * aux]
+    if det["n_available"] > 0:                             # decided from the data: ELMs or not
+        info["elmy"] = int(det["elmy"])
+        info["elm_detection"] = det["summary"]
+        if det["elmy"]:
+            info["elm_frequency"] = det["frequency"]
+            if det.get("energy"):
+                info["elm_energy_drop"] = -det["energy"]["mean_drop"]          # [J], mean W_MHD loss per ELM
+                info["elm_energy_tstat"] = det["energy"]["tstat"]
+            regime, source = "H", "ELM detection"
+            auto_desc = "ELMy H-mode" + (f" ({'+'.join(on)})" if on else "")
+        else:
+            regime, source = "L", "ELM detection (no ELMs)"
+            auto_desc = ("L-mode" if pm["ohmic"] + aux == 0 else
+                         "Ohmic L-mode" if aux < pm["ohmic"] else "heated L-mode (no ELMs)")
+        auto_regime = regime
     if explicit.get("regime"):
         regime, source = explicit["regime"].strip().upper()[:1], "SHOTINFO"
     elif "description" in explicit:
@@ -578,6 +962,9 @@ def shot_info(m):
         regime, source = REGIME_OVERRIDE, "command line"
     if regime:
         info["regime"], info["regime_source"] = regime, source
+    if det["n_available"] > 0 and regime and regime != ("H" if det["elmy"] else "L"):
+        print(f"  WARNING: regime {regime} ({source}) disagrees with the ELM detection "
+              f"({'ELMs found' if det['elmy'] else 'no ELMs'})")
     desc = explicit.get("description") or (auto_desc if regime == auto_regime else
                                            {"L": "L-mode", "H": "H-mode"}.get(regime, ""))
     if desc:
@@ -599,7 +986,7 @@ def mean_power(p, t, t0=None, t1=None):
     The signal is clipped to the window with linear interpolation at the edges, and
     taken as zero where the trace does not cover the window. NaN samples are skipped."""
     t0, t1 = T_START if t0 is None else t0, T_END if t1 is None else t1
-    p, t = np.asarray(p, float).ravel(), np.asarray(t, float).ravel()
+    p, t = align(np.asarray(p, float).ravel(), np.asarray(t, float).ravel())
     ok = np.isfinite(p) & np.isfinite(t)
     p, t = p[ok], t[ok]
     if t.size < 2:
@@ -622,7 +1009,16 @@ def d_heating(m):
     out = {"power_units": "W", "energy_units": "J"}           # units ASSUMED
     regime = shot_info(m).get("regime", "")
     for tname, dname, src, kind in HEATING_SOURCES:
+        if hasattr(h, tname) and hasattr(h, dname) and np.size(getattr(h, tname)) != np.size(getattr(h, dname)):
+            print(f"  WARNING: heating {tname} ({np.size(getattr(h, tname))} stamps) and {dname} "
+                  f"({np.size(getattr(h, dname))} values) differ in length: {kind}_{src} not stored")
+            continue
         if hasattr(h, tname) and hasattr(h, dname) and np.size(getattr(h, dname)):
+            tt = np.asarray(getattr(h, tname), float)
+            if np.nanmin(tt) > T_START + 1e-6 or np.nanmax(tt) < T_END - 1e-6:
+                print(f"  WARNING: heating {tname} covers {np.nanmin(tt):.3f}-{np.nanmax(tt):.3f} s only, "
+                      f"the database window is {T_START}-{T_END} s: {kind}_{src} is NaN outside "
+                      f"(fetch it over the same window: build_pex_database 'Window')")
             out[f"t_{src}"] = T_FRAMES
             if src == "nbi" and regime == "L":
                 # L-mode: NBI is a (fast-modulated) diagnostic beam, much faster than the
@@ -663,15 +1059,15 @@ def d_dss(m):
         data = {}
         for f in DSS_LINES + DSS_EXTRA:
             if hasattr(so, f):
-                a = interpolate(getattr(so, f), so.t, 1)
+                a = resample_slow(getattr(so, f), so.t, 1)
                 if np.isfinite(a).any():                   # all-NaN = unavailable
                     data[f] = a
                     have.add(f)
         if not data:
             out[name] = Missing_group("no data (all NaN) for " + ", ".join(DSS_LINES))
             continue
-        out[name] = {"t": T_FRAMES, "r": interpolate(so.R, so.t, 1),
-                     "z": interpolate(so.Z, so.t, 1), **data}
+        out[name] = {"t": T_FRAMES, "r": resample_slow(so.R, so.t, 1),
+                     "z": resample_slow(so.Z, so.t, 1), **data, **sample_info(so.t)}
         if "Ti" in data:
             out[name]["Ti_units"] = "eV"                   # ASSUMED
     if not any(isinstance(v, dict) for v in out.values()):
@@ -732,14 +1128,38 @@ IDS_MAP = {
 }
 
 
-def build(src, strict=False):
+def build(src, strict=False, mode="auto", t0=None, t1=None, dt_fast=1e-4, dt_slow=5e-3, mhd_file=None):
+    """Convert the .mat into a dict of groups. mode: 'auto' (default) = ELM time base if the shot
+    is an ELMy H-mode according to detect_elms(), else the default 40-frame base; 'default' / 'elm'
+    force one of them (with a forced regime: --regime=H -> 'elm', --regime=L -> 'default')."""
     m = sio.loadmat(src, squeeze_me=True, struct_as_record=False)
     m = type("M", (), {k: v for k, v in m.items() if not k.startswith("__")})()
+    if mhd_file:                                           # dW_MHD/dt fetched separately (ELMy shots only)
+        mm = sio.loadmat(mhd_file, squeeze_me=True)
+        if hasattr(getattr(m, "heating", None), "HEATING"):
+            m.heating.HEATING.t_dMHD, m.heating.HEATING.dEMHD = mm["t_dMHD"], mm["dEMHD"]
+        else:
+            print("  WARNING: --mhd given but the source has no heating struct")
+    det = detect_elms(m)
+    if mode == "auto":
+        mode = ("elm" if REGIME_OVERRIDE == "H" else "default") if REGIME_OVERRIDE else \
+               ("elm" if det["elmy"] else "default")
+        print(f"  ELM detection: {'ELMy H-mode' if det['elmy'] else 'no ELMs'} "
+              f"({det['summary']}) -> {mode} time base")
+    configure(mode, t0, t1, dt_fast, dt_slow)
+    if MODE == "elm" and det["elmy"]:                      # where do the ELMs sit relative to the window?
+        te = det["times"]
+        inside = te[(te >= T_START) & (te <= T_END)]
+        print(f"  ELM window {T_START}-{T_END} s: {inside.size} of {te.size} detected ELMs; first ELM at "
+              f"{te.min():.3f} s" + (f"  -> the window starts {te.min() - T_START:.2f} s before the first ELM "
+                                    f"(H-mode transition?); use --t0 to move it" if te.min() - T_START > 0.1 else ""))
     shot = int(get(get(m, "EdgeData"), "shot")) if hasattr(m, "EdgeData") else int(m.shot)
     db = {}
     for tcv, fn in DIAGNOSTICS.items():
         ids, sub = IDS_MAP[tcv]
         _METHOD_LOG.clear()
+        set_grid("slow" if (MODE == "elm" and tcv in SLOW_DIAGNOSTICS) else "fast")
+        set_hold(MODE == "elm" and tcv in HOLD_DIAGNOSTICS)
         try:
             res = fn(m)
         except Missing as e:
@@ -752,12 +1172,12 @@ def build(src, strict=False):
             print(f"  {ids}{'/' + sub if sub else ''} ({tcv}): unavailable ({res.reason})")
         else:
             used = {meth for meth, _ in _METHOD_LOG}
-            if used and isinstance(res, dict):
+            if used and isinstance(res, dict) and "time_resampling" not in res:
                 res["time_resampling"] = " + ".join(sorted(used))
-            slow = [st for meth, st in _METHOD_LOG if meth == "interpolation"]
+            slow = [(meth, st) for meth, st in _METHOD_LOG if meth in ("interpolation", "nearest-sample hold")]
             if slow:
-                print(f"  {ids}{'/' + sub if sub else ''}: native step {np.median(slow) * 1e3:.1f} ms vs "
-                      f"{WINDOW * 1e3:.0f} ms window -> linear interpolation")
+                print(f"  {ids}{'/' + sub if sub else ''}: native step {np.median([st for _, st in slow]) * 1e3:.1f} ms "
+                      f"vs {WINDOW * 1e3:g} ms window -> {slow[0][0]}")
             # record the shot each diagnostic was read from; warn on any mismatch
             try:
                 src_shot = int(SHOT_SOURCES[tcv](m))
@@ -781,7 +1201,11 @@ def build(src, strict=False):
             db[ids] = Missing_group("; ".join(f"{k}: {v.reason}" for k, v in g.items()
                                               if isinstance(v, Missing_group)))
             db[ids]["tcv_name"] = g["tcv_name"]
-    return shot, db, shot_info(m)
+    set_grid("fast")                                       # root time base = fast grid
+    set_hold(False)
+    info = shot_info(m)
+    info["_elm_times"] = detect_elms(m)["times"]
+    return shot, db, info
 
 
 def write_h5(group, d):
@@ -807,19 +1231,37 @@ def write_h5(group, d):
                                  compression_opts=4)
 
 
-def convert(src, out_dir=".", strict=False, regime=None):
-    """Convert one STRUCTexp .mat file into <out_dir>/shot_<shot>.h5; return the path."""
+def convert(src, out_dir=".", strict=False, regime=None, mode="auto", t0=None, t1=None,
+            dt_fast=1e-4, dt_slow=5e-3, mhd_file=None):
+    """Convert one STRUCTexp .mat file into <out_dir>/shot_<shot>.h5; return the path.
+
+    mode='auto'   : (default) ELM time base if the shot is an ELMy H-mode (detect_elms), else 'default'.
+    mode='default': one 40-frame grid (L-mode, 0.6-1.6 s).
+    mode='elm'    : fast grid (dt_fast: heating, valve, pressure gauges, IR) + slow grid (dt_slow: the rest)
+                    on t0-t1 (default 0.6-1.0 s)."""
     global REGIME_OVERRIDE
     if regime:
         REGIME_OVERRIDE = regime.strip().upper()[:1]
-    shot, db, info = build(src, strict)
+    shot, db, info = build(src, strict, mode, t0, t1, dt_fast, dt_slow, mhd_file)
+    elm_times = info.pop("_elm_times", np.array([]))
     os.makedirs(out_dir, exist_ok=True)
     dst = os.path.join(out_dir, f"shot_{shot}.h5")
     with h5py.File(dst, "w") as f:
         f.attrs["shot"] = shot
         f.attrs["source_file"] = os.path.basename(src)
-        f.attrs["t_info"] = ("frame centres [s]; each value is the mean of the "
-                             "native samples in t +/- window/2")
+        f.attrs["time_mode"] = MODE
+        f.attrs["t_start"], f.attrs["t_end_window"] = T_START, T_END
+        if MODE == "elm":
+            f.attrs["t_info"] = ("`t` = fast grid (heating, valve, pressure gauges, IR; frame centres [s]); all other "
+                                 "diagnostics are on `t_slow` (their groups carry their own `t`); TS, CXRS, IR, "
+                                 "MANTIS and DSS hold each sample on the nearest frames, see t_sample / measured")
+            f.attrs["dt_fast"], f.attrs["dt_slow"] = GRIDS["fast"][1], GRIDS["slow"][1]
+            f.create_dataset("t_slow", data=GRIDS["slow"][0])
+            if elm_times.size:
+                f.create_dataset("elm_times", data=elm_times)
+        else:
+            f.attrs["t_info"] = ("frame centres [s]; each value is the mean of the "
+                                 "native samples in t +/- window/2")
         f.attrs["dt_frame"] = DT
         f.attrs["window"] = WINDOW
         for k, v in info.items():
@@ -830,16 +1272,42 @@ def convert(src, out_dir=".", strict=False, regime=None):
     return dst
 
 
+def detect_only(src, regime=None):
+    """Print 'ELMY=1' or 'ELMY=0' (+ the detection report) for a .mat file, without converting it.
+    Used by build_pex_database.m to decide, before the slow LIUQE call, whether dEMHD is needed.
+    A forced regime (--regime=H/L) decides directly."""
+    if regime:
+        print(f"ELMY={int(regime.strip().upper()[:1] == 'H')}  regime forced to {regime}")
+        return
+    m = sio.loadmat(src, variable_names=["EdgeData", "LPdata", "heating"], squeeze_me=True,
+                    struct_as_record=False)
+    m = type("M", (), {k: v for k, v in m.items() if not k.startswith("__")})()
+    det = detect_elms(m)
+    print(f"ELMY={int(det['elmy'])}  {det['summary']}")
+
+
 def main(argv):
     strict = "--strict" in argv
-    regime = None
+    regime, mode, opts, mhd, detect = None, "auto", {}, None, "--detect" in argv
     for a in argv:
-        if a.startswith("--regime="):                       # e.g. --regime=L (when SHOTINFO is missing)
+        if a.startswith("--regime="):                       # e.g. --regime=L (forces the regime label)
             regime = a.split("=", 1)[1]
+        elif a == "--elm":                                  # force the ELM-resolved time base
+            mode = "elm"
+        elif a.startswith("--mode="):                       # auto (default) | default | elm
+            mode = a.split("=", 1)[1]
+        elif a.startswith("--mhd="):                        # .mat with t_dMHD, dEMHD (separate fetch)
+            mhd = a.split("=", 1)[1]
+        elif a.startswith(("--t0=", "--t1=", "--dt-fast=", "--dt-slow=")):
+            k, v = a[2:].split("=", 1)
+            opts[k.replace("-", "_")] = float(v)
     args = [a for a in argv if not a.startswith("--")]
     src = args[0] if args else "STRUCTexp.mat"
+    if detect:
+        detect_only(src, regime)
+        return
     out_dir = args[1] if len(args) > 1 else "."
-    convert(src, out_dir, strict, regime)
+    convert(src, out_dir, strict, regime, mode, mhd_file=mhd, **opts)
 
 
 if __name__ == "__main__":

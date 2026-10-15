@@ -100,6 +100,9 @@ def header(f):
     regime = (f"   [regime {a['regime']}" + (f", from {a['regime_source']}]" if "regime_source" in a else "]")
               if "regime" in a else "   [regime unknown]")
     print(f"  type     : {a.get('description', '?')}{regime}")
+    if "elmy" in a:
+        print(f"  ELMs     : {'ELMy, ' + format(a['elm_frequency'], '.0f') + ' Hz' if a['elmy'] else 'none detected'}"
+              f"   ({a.get('elm_detection', '')})")
     print(f"  baffle   : {a.get('baffle', '?')}")
     print(f"  date     : {a.get('date', '?')}" + (f"   ({a['date_source']})" if "date_source" in a else ""))
     if "t_end" in a:
@@ -109,7 +112,14 @@ def header(f):
         print("  <power>  : " + ", ".join(f"{k} {v / 1e3:.1f} kW" for k, v in pw.items())
               + f"  (mean over {t[0]:.1f}-{t[-1]:.1f} s)")
     window = f", averaging window +-{a['window'] * 5e2:.1f} ms" if "window" in a else ""
-    print(f"  time base: {len(t)} frames, {t[0]:.3f}-{t[-1]:.3f} s, dt = {a['dt_frame'] * 1e3:.2f} ms{window}\n")
+    if a.get("time_mode") == "elm" and "t_slow" in f:
+        ts = f["t_slow"][()]
+        print(f"  time base: ELM mode, {t[0]:.3f}-{t[-1]:.3f} s | fast grid {len(t)} frames, "
+              f"dt = {a['dt_fast'] * 1e3:.2f} ms (heating, valve, pressure gauges, IR) | slow grid {len(ts)} frames, "
+              f"dt = {a['dt_slow'] * 1e3:.2f} ms (all other diagnostics; TS, CXRS, MANTIS, DSS hold each "
+              f"sample on the nearest frames: t_sample / measured)\n")
+    else:
+        print(f"  time base: {len(t)} frames, {t[0]:.3f}-{t[-1]:.3f} s, dt = {a['dt_frame'] * 1e3:.2f} ms{window}\n")
     bad = {p: s for p, s in source_shots(f).items() if s != int(a["shot"])}
     for p, s in bad.items():
         print(f"  WARNING: {p} comes from shot {s}, not {a['shot']}")
@@ -122,7 +132,7 @@ def main(argv):
         sys.exit(__doc__)
     with h5py.File(argv[0], "r") as f:
         header(f)
-        diags = [k for k in f if k != "t"]
+        diags = [k for k in f if isinstance(f[k], h5py.Group)]
         ok = [d for d in diags if f[d].attrs.get("available", 1)]
         print(f"Available ({len(ok)}/{len(diags)}): {', '.join(ok)}")
         for d in diags:
