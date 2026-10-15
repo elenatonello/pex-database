@@ -5,15 +5,16 @@ Every time-dependent quantity of every diagnostic is resampled on the same
 N_FRAMES-point time base between T_START and T_END. Each frame is the
 NaN-aware average of all native samples falling in [t - WINDOW/2, t + WINDOW/2)
 (WINDOW = 10 ms, i.e. +-5 ms around the frame time; the frame spacing is
-25.6 ms, so windows do not touch). Frames with no native sample are NaN.
+25.6 ms, so windows do not touch). This is done automatically only when the
+diagnostic is sampled fast enough (>= MIN_SAMPLES_PER_WINDOW samples per window);
+slower diagnostics (old TS system, CXRS, DSS, MANTIS...) are linearly interpolated
+instead (see resample(), interpolate()), otherwise many frames would be empty.
+The method used is stored in the `time_resampling` attribute of each group.
 
 Top-level groups are named after the IMAS IDS they correspond to (see IDS_MAP);
 the original TCV name is kept in each group's `tcv_name` attribute.
 
 Langmuir probes are NOT resampled: all native samples in [T_START, T_END] are\nkept on their own time vector (see crop()).
-
-CXRS is sampled every 24 ms (slower than the window) so it is linearly
-interpolated instead (see interpolate()).
 
 Missing diagnostics: every diagnostic is a top-level HDF5 group carrying an
 attribute `available` (1/0). If the source is absent, flagged unavailable,
@@ -46,12 +47,36 @@ class Missing(Exception):
     """Raised when a diagnostic has no usable data in the source file."""
 
 
-def resample(arr, t, axis):
-    """Bin-average `arr` along `axis` (native times `t`) onto T_FRAMES."""
+MIN_SAMPLES_PER_WINDOW = 2     # window average only if the window holds >= this many native samples
+_METHOD_LOG = []               # (method, native step) of every resampling call; see build()
+
+
+def native_step(t):
+    """Median sampling step of the time vector [s] (inf if it cannot be determined)."""
+    d = np.diff(np.asarray(t, dtype=float).ravel())
+    d = d[np.isfinite(d) & (d > 0)]
+    return float(np.median(d)) if d.size else np.inf
+
+
+def resample(arr, t, axis, method="auto"):
+    """Resample `arr` along `axis` (native times `t`) onto T_FRAMES.
+
+    method='auto' (default) picks the method from the native sampling step:
+      window average  if the +-WINDOW/2 window holds >= MIN_SAMPLES_PER_WINDOW samples
+                      (NaN-aware mean of the samples in [t - WINDOW/2, t + WINDOW/2));
+      interpolation   otherwise (slow diagnostic, e.g. TS 10-25 ms, CXRS, DSS): a
+                      window would often contain no sample at all, see interpolate().
+    'mean' / 'interpolate' force one of them."""
     arr = np.asarray(arr, dtype=float)
     t = np.asarray(t, dtype=float).ravel()
     if arr.size == 0 or t.size == 0:
         raise Missing("empty array")
+    step = native_step(t)
+    if method == "auto":
+        method = "mean" if round(WINDOW / step, 6) >= MIN_SAMPLES_PER_WINDOW else "interpolate"
+    if method == "interpolate":
+        return interpolate(arr, t, axis)
+    _METHOD_LOG.append(("window average", step))
     arr = np.moveaxis(arr, axis, 0)
     out = np.full((N_FRAMES,) + arr.shape[1:], np.nan)
     for i, tf in enumerate(T_FRAMES):
@@ -69,27 +94,42 @@ def interpolate(arr, t, axis):
     Each 1D series is interpolated using only its valid (non-NaN) samples.
     A frame is NaN if it lies outside the valid range, or if the two valid
     samples around it are more than 2 native sampling steps apart (no
-    interpolation across long gaps of missing data).
+    interpolation across long gaps of missing data). A frame time that coincides
+    with a valid sample takes that sample. Vectorised over all series (chunked).
     """
     arr = np.asarray(arr, dtype=float)
     t = np.asarray(t, dtype=float).ravel()
     if arr.size == 0 or t.size == 0:
         raise Missing("empty array")
-    max_gap = 2 * np.median(np.diff(t))
+    step = native_step(t)
+    _METHOD_LOG.append(("interpolation", step))
+    max_gap = 2 * step
     a = np.moveaxis(arr, axis, 0)
-    out = np.full((N_FRAMES,) + a.shape[1:], np.nan)
-    for idx in np.ndindex(*a.shape[1:]):
-        y = a[(slice(None),) + idx]
-        ok = ~np.isnan(y)
-        if ok.sum() < 2:
-            continue
-        tv, yv = t[ok], y[ok]
-        i = np.searchsorted(tv, T_FRAMES)                 # right neighbour index
-        inside = (i > 0) & (i < len(tv))
-        i0, i1 = np.clip(i - 1, 0, len(tv) - 1), np.clip(i, 0, len(tv) - 1)
-        good = inside & (tv[i1] - tv[i0] <= max_gap)
-        val = np.interp(T_FRAMES, tv, yv)
-        out[(slice(None),) + idx] = np.where(good, val, np.nan)
+    n_t = a.shape[0]
+    a2 = a.reshape(n_t, -1)
+    out2 = np.full((N_FRAMES, a2.shape[1]), np.nan)
+    p = np.searchsorted(t, T_FRAMES)                       # first native sample at or after each frame
+    left_i, right_i = np.clip(p - 1, 0, n_t - 1), np.clip(p, 0, n_t - 1)
+    has_left, has_right = (p >= 1)[:, None], (p < n_t)[:, None]
+    idx = np.arange(n_t)[:, None]
+    tf = T_FRAMES[:, None]
+    for s0 in range(0, a2.shape[1], 2048):
+        y = a2[:, s0:s0 + 2048]
+        valid = ~np.isnan(y)
+        last = np.maximum.accumulate(np.where(valid, idx, -1), axis=0)            # last valid index <= i
+        nxt = np.minimum.accumulate(np.where(valid, idx, n_t)[::-1], axis=0)[::-1]  # next valid index >= i
+        L = np.where(has_left, last[left_i], -1)           # nearest valid sample before the frame
+        R = np.where(has_right, nxt[right_i], n_t)         # nearest valid sample at/after the frame
+        Lc, Rc = np.clip(L, 0, n_t - 1), np.clip(R, 0, n_t - 1)
+        tL, tR = t[Lc], t[Rc]
+        yL, yR = np.take_along_axis(y, Lc, 0), np.take_along_axis(y, Rc, 0)
+        gap = tR - tL
+        with np.errstate(invalid="ignore", divide="ignore"):
+            val = yL + np.where(gap > 0, (tf - tL) / gap, 0.0) * (yR - yL)
+        good = (L >= 0) & (R < n_t) & (gap <= max_gap)
+        exact = (R < n_t) & (tR == tf)                      # frame time = a valid sample
+        out2[:, s0:s0 + 2048] = np.where(exact, yR, np.where(good, val, np.nan))
+    out = out2.reshape((N_FRAMES,) + a.shape[1:])
     return np.moveaxis(out, 0, axis)
 
 
@@ -265,7 +305,7 @@ def d_lp(m):
             d[out_n] = crop(np.asarray(arr)[sel], L.time, 1)[0]         # (probe, t)
         return d
 
-    return {"t": t_lp,
+    return {"t": t_lp, "time_resampling": "none (native samples)",
             "embedded": subset(np.ones(probes.shape, bool)),
             "inner_target": subset((probes >= 136) & (probes <= 190)),
             "outer_target": subset((probes >= 1) & (probes <= 42))}
@@ -699,6 +739,7 @@ def build(src, strict=False):
     db = {}
     for tcv, fn in DIAGNOSTICS.items():
         ids, sub = IDS_MAP[tcv]
+        _METHOD_LOG.clear()
         try:
             res = fn(m)
         except Missing as e:
@@ -710,6 +751,13 @@ def build(src, strict=False):
         if isinstance(res, Missing_group):
             print(f"  {ids}{'/' + sub if sub else ''} ({tcv}): unavailable ({res.reason})")
         else:
+            used = {meth for meth, _ in _METHOD_LOG}
+            if used and isinstance(res, dict):
+                res["time_resampling"] = " + ".join(sorted(used))
+            slow = [st for meth, st in _METHOD_LOG if meth == "interpolation"]
+            if slow:
+                print(f"  {ids}{'/' + sub if sub else ''}: native step {np.median(slow) * 1e3:.1f} ms vs "
+                      f"{WINDOW * 1e3:.0f} ms window -> linear interpolation")
             # record the shot each diagnostic was read from; warn on any mismatch
             try:
                 src_shot = int(SHOT_SOURCES[tcv](m))
