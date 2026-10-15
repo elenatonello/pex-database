@@ -12,6 +12,7 @@ shot_page() is the previous single-shot one-page view (time traces + profiles).
 From the command line:
   python3 -m pexdb.plotting.shot_overview $PEX_DB_DIR/shot_89437.h5                 # show the figures
   python3 -m pexdb.plotting.shot_overview $PEX_DB_DIR --save figures/ov --format svg --times 0.8 1.1 1.5
+  python3 -m pexdb.plotting.shot_overview $PEX_DB_DIR/shot_88307.h5 $PEX_DB_DIR/shot_88306.h5 --color-by shot
 """
 import argparse
 import numpy as np
@@ -153,6 +154,9 @@ def main():
                     help="times [s] of the profiles (default 0.8 1.0 1.2)")
     ap.add_argument("--x", choices=("rho", "dsep"), default="rho",
                     help="radial coordinate of all profiles (dsep drops the CXRS Ti row)")
+    ap.add_argument("--color-by", choices=("auto", "regime", "baffle", "shot"), default="auto",
+                    help="colour rule; 'shot' gives every shot its own colour (default auto: "
+                         "regime, else baffle, else shot)")
     ap.add_argument("--save", help="filename prefix: writes <prefix>_<figure>.<format>")
     ap.add_argument("--format", default="png", choices=("png", "svg", "pdf"))
     args = ap.parse_args()
@@ -160,7 +164,7 @@ def main():
                                                               "cairo", "template"}:
         raise SystemExit("matplotlib backend cannot open windows (no display?). Use --save <prefix> "
                          "or set MPLBACKEND=TkAgg / QtAgg / MacOSX.")
-    shot_overview(shotdb.load(args.source), tuple(args.times), args.x, save=args.save,
+    shot_overview(shotdb.load(args.source), tuple(args.times), args.x, args.color_by, save=args.save,
                   fmt=args.format)
     if not args.save:
         plt.show()
