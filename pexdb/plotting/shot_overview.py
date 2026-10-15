@@ -6,7 +6,7 @@
     figs = shot_overview.shot_overview(shots, times=(0.8, 1.0, 1.2), save="out/ov")
 
 shot_overview() returns a dict of figures: geometry, power, vs_density, power_balance, vir_vs_hir,
-upstream, outer_target, inner_target (all built from diag_plots).
+ir_qperp, upstream, outer_target, inner_target (all built from diag_plots).
 shot_page() is the previous single-shot one-page view (time traces + profiles).
 
 From the command line:
@@ -125,6 +125,7 @@ def shot_overview(shots, times=(0.8, 1.0, 1.2), x="rho", color_by="auto", save=N
         "vs_density": lambda: dp.vs_density(shots, color_by=color_by),
         "power_balance": lambda: dp.power_balance_vs_density(shots, color_by=color_by),
         "vir_vs_hir": lambda: dp.vir_vs_hir(shots, color_by=color_by),
+        "ir_qperp": lambda: dp.ir_qperp_profiles(shots, times, color_by=color_by),
         "upstream": lambda: dp.profiles_ne_te_ti(shots, times, x=x, color_by=color_by),
         "outer_target": lambda: dp.lp_target_profiles(shots, times, target="outer", x=x,
                                                       color_by=color_by),
