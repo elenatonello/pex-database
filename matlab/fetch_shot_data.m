@@ -25,6 +25,7 @@ EdgeData.APG.geometry  = apg_geom;
 EdgeData.BAR.geometry  = bar_geom;
 EdgeData.DSS.geom      = dss_geom();
 EdgeData.DSS           = dss_addTi(EdgeData.DSS, DSSdata_fit);
+EdgeData.IR.geom       = ir_geom();
 
 % Wall / vessel description
 mdsconnect('tcvdata.epfl.ch');
@@ -224,4 +225,32 @@ function DSS = dss_addTi(DSS, DSSdata_fit)
             end
         end
     end
+end
+
+
+function geom = ir_geom
+
+VIRgeom=struct; 
+HIRgeom=struct;
+
+%Port geometry
+HIRgeom.Rp = 1.175;
+HIRgeom.Zp = -0.460;
+HIRgeom.Dp = 0.230;
+HIRgeom.Lp = 0.039;
+
+VIRgeom.Rp = 0.880;
+VIRgeom.Zp = 0.790;
+VIRgeom.Dp = 0.090;
+VIRgeom.Lp = 0.040;
+
+% Camera location
+VIRgeom.Rd = 0.880;
+VIRgeom.Zd = 0.9;
+HIRgeom.Rd = 1.4;
+HIRgeom.Zd = -0.45;
+
+geom = struct;
+geom.VIR = VIRgeom; geom.HIR = HIRgeom;
+
 end
