@@ -8,11 +8,18 @@
 shot_overview() returns a dict of figures: geometry, power, vs_density, power_balance, vir_vs_hir,
 upstream, outer_target, inner_target (all built from diag_plots).
 shot_page() is the previous single-shot one-page view (time traces + profiles).
+
+From the command line:
+  python3 -m pexdb.plotting.shot_overview $PEX_DB_DIR/shot_89437.h5                 # show the figures
+  python3 -m pexdb.plotting.shot_overview $PEX_DB_DIR --save figures/ov --format svg --times 0.8 1.1 1.5
 """
+import argparse
 import numpy as np
+import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
+from pexdb import shotdb
 from pexdb.shotdb import Unavailable, Shot
 from pexdb.plotting import diag_plots as dp
 
@@ -101,13 +108,13 @@ def shot_page(shot, times=(0.8, 1.1, 1.4), figsize=(13, 9)):
     return fig
 
 
-def shot_overview(shots, times=(0.8, 1.0, 1.2), x="rho", color_by="auto", save=None):
+def shot_overview(shots, times=(0.8, 1.0, 1.2), x="rho", color_by="auto", save=None, fmt="png"):
     """Geometry of all diagnostics, power balance, pressures and separatrix density
     vs line-average density, and upstream / outer-target / inner-target profiles.
     shots: a Shot or a list. x: radial coordinate of ALL profiles (Thomson, CXRS and
     probes), 'rho' or 'dsep' (distance to the separatrix at the midplane; CXRS
     has no dsep, so the Ti row is dropped). save: filename prefix; each figure is written to
-    <save>_<name>.png. Returns {name: fig}. A figure that cannot be built (missing
+    <save>_<name>.<fmt> (png, svg or pdf). Returns {name: fig}. A figure that cannot be built (missing
     diagnostic in every shot, unexpected data) is reported and skipped; the others
     are still made."""
     shots = [shots] if isinstance(shots, Shot) else list(shots)
@@ -134,5 +141,30 @@ def shot_overview(shots, times=(0.8, 1.0, 1.2), x="rho", color_by="auto", save=N
             print(f"  skip figure '{name}': {type(ex).__name__}: {ex}")
     if save:
         for name, fig in figs.items():
-            fig.savefig(f"{save}_{name}.png", dpi=150)
+            fig.savefig(f"{save}_{name}.{fmt}", dpi=150)
+            print(f"  wrote {save}_{name}.{fmt}")
     return figs
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    ap.add_argument("source", nargs="+", help="folder(s), file(s) or glob(s) of shot_*.h5")
+    ap.add_argument("--times", type=float, nargs="+", default=(0.8, 1.0, 1.2),
+                    help="times [s] of the profiles (default 0.8 1.0 1.2)")
+    ap.add_argument("--x", choices=("rho", "dsep"), default="rho",
+                    help="radial coordinate of all profiles (dsep drops the CXRS Ti row)")
+    ap.add_argument("--save", help="filename prefix: writes <prefix>_<figure>.<format>")
+    ap.add_argument("--format", default="png", choices=("png", "svg", "pdf"))
+    args = ap.parse_args()
+    if not args.save and matplotlib.get_backend().lower() in {"agg", "pdf", "ps", "svg", "pgf",
+                                                              "cairo", "template"}:
+        raise SystemExit("matplotlib backend cannot open windows (no display?). Use --save <prefix> "
+                         "or set MPLBACKEND=TkAgg / QtAgg / MacOSX.")
+    shot_overview(shotdb.load(args.source), tuple(args.times), args.x, save=args.save,
+                  fmt=args.format)
+    if not args.save:
+        plt.show()
+
+
+if __name__ == "__main__":
+    main()
