@@ -15,6 +15,7 @@ All functions take a list of shotdb.Shot and return (fig, axes). Typical use:
     dp.vs_density(shots)
     dp.power_balance_vs_density(shots)
     dp.vir_vs_hir(shots)
+    dp.ir_qperp_profiles(shots, times=(0.8, 1.0, 1.2))
     dp.dss_profiles(shots, lines=("CII_6582", "Ti"), x="z")
     dp.dss_chords(shots, chords=(5, 15, 25), lines=("CII_6582", "Ti"), x="nesep")
 """
@@ -618,6 +619,41 @@ def vir_vs_hir(shots, color_by="auto", t_range=(0.6, 1.6)):
     ax.set_aspect("equal")
     fig.tight_layout()
     return fig, ax
+
+
+IR_QPERP_SCALE = 1e-6      # W/m^2 -> MW/m^2 (units of qperp are not stored in the database; assumed W/m^2)
+
+
+def ir_qperp_profiles(shots, times=(0.8, 1.0, 1.2), targets=("HIR", "VIR"), color_by="auto", **kw):
+    """Perpendicular heat flux q_perp [MW/m^2] from the IR cameras against the distance to
+    the separatrix at the midplane [mm], one row per camera (HIR = inner, VIR = outer
+    target), one column per time. The IR cameras only provide dsep (no rho)."""
+    names = {"HIR": "inner target (HIR)", "VIR": "outer target (VIR)"}
+
+    def getter(cam):
+        def g(s):
+            q = s[f"camera_ir/{cam}/qperp"]                      # (position, t)
+            d = s[f"camera_ir/{cam}/distance_separatrix_midplane"]
+            return d.T * 1e3, q.T, None
+        return g
+
+    rows = []
+    for cam in targets:
+        row = {"label": rf"{names.get(cam, cam)}" + "\n" + r"$q_\perp$ [MW m$^{-2}$]",
+               "scale": IR_QPERP_SCALE, "get": getter(cam)}
+        vals = []
+        for s in shots:
+            try:
+                vals.append(np.ravel(row["get"](s)[1]) * IR_QPERP_SCALE)
+            except Unavailable:
+                pass
+        if vals:
+            v = np.concatenate(vals)
+            v = v[np.isfinite(v)]
+            if v.size:
+                row["ylim"] = (min(0, np.percentile(v, 1)), 1.1 * np.percentile(v, 99.5))
+        rows.append(row)
+    return pt.profile_grid(shots, rows, times, r"$R-R_{sep}$ midplane [mm]", color_by=color_by, **kw)
 
 
 # ---------------------------------------------------------------------------
