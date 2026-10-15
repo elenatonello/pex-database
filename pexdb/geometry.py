@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Poloidal geometry of the diagnostics, in two figures (one panel per shot, with wall and LCFS):
 
-  Figure 1 (plasma):    Thomson, Langmuir probes (inner / outer target / embedded), FIR chords,
+  Figure 1 (plasma):    Thomson, CXRS, Langmuir probes (inner / outer target / embedded), FIR chords,
                         IR cameras VIR and HIR
   Figure 2 (radiation): bolometer lines of sight, MANTIS field of view, DSS lines of sight
 
@@ -20,7 +20,7 @@ from pexdb import shotdb
 from pexdb.plotting import diag_plots as dp
 
 SETS = {
-    "plasma": ["Thomson", "LP outer target", "LP inner target", "LP embedded", "FIR chords",
+    "plasma": ["Thomson", "CXRS", "LP outer target", "LP inner target", "LP embedded", "FIR chords",
                "IR HIR", "IR VIR"],
     "radiation": ["bolometer LOS", "MANTIS FOV", "DSS LOS"],
 }
@@ -32,6 +32,7 @@ def geometry(shots, t=1.0, sets=SETS):
     for name, layers in sets.items():
         fig, _ = dp.plot_geometry(shots, t=t, layers=layers)
         fig.suptitle(name, fontsize=11)
+        fig.tight_layout(rect=(0, 0, 1, 0.96))             # keep the title clear of the panel titles
         figs[name] = fig
     return figs
 

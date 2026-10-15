@@ -426,12 +426,32 @@ def _geometry_layers(s):
     ]
 
 
+def _geometry_extent(shots, margin=0.04):
+    """(rmin, rmax, zmin, zmax) common to all panels: the outer vessel and the bolometer
+    detectors of every shot, whatever layers are drawn, so the boxes always have the same size."""
+    r, z = [], []
+    for s in shots:
+        w = s.wall()
+        for name in ("vessel_outer", "vessel", "tiles"):
+            if name in w:
+                r.append(np.nanmin(w[name][0])); r.append(np.nanmax(w[name][0]))
+                z.append(np.nanmin(w[name][1])); z.append(np.nanmax(w[name][1]))
+                break
+        if s.has("bolometer/detector/r"):
+            r += [np.nanmin(s["bolometer/detector/r"]), np.nanmax(s["bolometer/detector/r"])]
+            z += [np.nanmin(s["bolometer/detector/z"]), np.nanmax(s["bolometer/detector/z"])]
+    if not r:
+        return None
+    return min(r) - margin, max(r) + margin, min(z) - margin, max(z) + margin
+
+
 def plot_geometry(shots, t=1.0, with_equilibrium=True, layers=None):
     """Poloidal cross-section per shot with the position / line of sight of every
     available diagnostic (Thomson, CXRS, FIR, bolometer, Langmuir probes,
     DSS lines of sight, pressure gauge ports, IR cameras, gas valve, MANTIS field of view), the
     wall and the LCFS at time t. Diagnostics missing in a shot are listed below
-    its panel.
+    its panel. All panels share the same axis limits (vessel + bolometer extent), so the
+    boxes have the same size whatever is drawn.
 
     layers: draw only these entries (None = all), by label: 'Thomson', 'CXRS',
     'FIR chords', 'bolometer LOS', 'DSS LOS', 'LP outer target', 'LP inner target',
@@ -441,10 +461,11 @@ def plot_geometry(shots, t=1.0, with_equilibrium=True, layers=None):
         bad = [l for l in layers if l not in known]
         if bad:
             raise ValueError(f"unknown geometry layer(s) {bad}; choose from {known}")
+    extent = _geometry_extent(shots)
     fig, axes = plt.subplots(1, len(shots), squeeze=False,
                              figsize=(4.4 * len(shots) + 0.5, 8))
     for ax, s in zip(axes[0], shots):
-        ax.set_aspect("equal")
+        ax.set_aspect("equal", adjustable="box")
         pt.draw_wall(ax, s)
         missing = []
         for label, grp, color, draw in _geometry_layers(s):
@@ -460,7 +481,11 @@ def plot_geometry(shots, t=1.0, with_equilibrium=True, layers=None):
             k = s.frame(t)
             ax.plot(s["equilibrium/r_contour"][:, k], s["equilibrium/z_contour"][:, k], color="0.3", lw=1.4,
                     label=f"LCFS t={t:.2f}s")
-        ax.autoscale_view()
+        if extent:
+            ax.set_xlim(extent[:2])
+            ax.set_ylim(extent[2:])
+        else:
+            ax.autoscale_view()
         ax.set_title(s.label, fontsize=9, color=s.color())
         ax.set_xlabel("R [m]")
         ax.set_ylabel("Z [m]")
