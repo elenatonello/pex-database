@@ -791,18 +791,39 @@ def dss_chords(shots, chords=(5, 15, 25), lines=("CII_6582",), x="t", pressure=N
 PRESSURES = {   # panel -> [(path, instrument, marker)]
     "divertor": [("barometry/barometer/pressure_div", "baratron", "o"),
                  ("barometry/pressure_gauges/pressure_div", "APG gauge", "s")],
-    "midplane": [("barometry/barometer/pressure_mid", "baratron", "o"),
-                 ("barometry/pressure_gauges/pressure_mic", "APG gauge", "s")],
+}
+GAS = {   # flow quantity -> (label, scale)
+    "flow_rate": (r"gas flow [Pa m$^3$ s$^{-1}$]", 1),
+    "flow_particles": (r"gas flow [$10^{21}$ particles s$^{-1}$]", 1e-21),
 }
 
 
-def vs_density(shots, color_by="auto", t_range=(0.6, 1.6), err_style="bar"):
-    """Divertor pressure, midplane pressure (baratron = circles, APG gauge =
-    squares) and upstream ne_u (with errors) against the Thomson line-average
-    density; colour = shot."""
+def gas_flow(s, key="flow_rate", valve=None):
+    """Gas flow of valve `valve` (name, e.g. 'V1'), or the sum over all valves of the shot
+    (None); NaN-aware. key: 'flow_rate' [Pa m^3/s] or 'flow_particles' [particles/s]."""
+    if not s.diagnostics.get("gas_injection", False):
+        raise Unavailable(f"shot {s.shot}: gas_injection not available")
+    with h5py.File(s.path, "r") as f:
+        names = list(f["gas_injection/valve"]) if "valve" in f["gas_injection"] else []
+    names = [valve] if valve else names
+    flows = [s[f"gas_injection/valve/{n}/{key}"] for n in names
+             if s.has(f"gas_injection/valve/{n}/{key}")]
+    if not flows:
+        raise Unavailable(f"shot {s.shot}: no gas valve data")
+    return np.nansum(flows, axis=0)
+
+
+def vs_density(shots, color_by="auto", t_range=(0.6, 1.6), err_style="bar", gas="flow_rate",
+               valve=None):
+    """Divertor pressure (baratron = circles, APG gauge = squares), valve gas flow
+    (`gas`: 'flow_rate' or 'flow_particles'; `valve`: name, default the sum of all valves)
+    and upstream ne_u (with errors) against the Thomson line-average density; colour = shot."""
     fig, axes = plt.subplots(1, 3, figsize=(13, 4))
     xlabel = r"$\bar n_e$ (TS) [$10^{19}$ m$^{-3}$]"
-    for ax, (name, items) in zip(axes[:2], PRESSURES.items()):
+    gas_label, gas_scale = GAS[gas]
+    panels = [(axes[0], "divertor pressure [mPa]", PRESSURES["divertor"]),
+              (axes[1], gas_label, [(None, None, "o")])]
+    for ax, ylabel, items in panels:
         for s in shots:
             try:
                 x = s["thomson_scattering/av_dens"] * 1e-19
@@ -812,14 +833,20 @@ def vs_density(shots, color_by="auto", t_range=(0.6, 1.6), err_style="bar"):
             m = (s.t >= t_range[0]) & (s.t <= t_range[1])
             for path, _, mk in items:
                 try:
-                    ax.scatter(x[m], s[path][m] * 1e3, color=s.color(color_by), marker=mk, s=18)
+                    y = gas_flow(s, gas, valve) * gas_scale if path is None else s[path] * 1e3
+                    ax.scatter(x[m], y[m], color=s.color(color_by),
+                               marker=s.marker if path is None else mk, s=18)
                 except Unavailable as ex:
-                    pt._warn(s, path, ex)
+                    pt._warn(s, path or "gas flow", ex)
         ax.set_xlabel(xlabel)
-        ax.set_ylabel(f"{name} pressure [mPa]")
+        ax.set_ylabel(ylabel)
         ax.grid(alpha=0.3)
-        ax.legend(handles=[plt.Line2D([], [], color="gray", marker=mk, ls="none", label=lab)
-                           for _, lab, mk in items], fontsize=8, frameon=False, loc="upper left")
+        if items[0][0] is None:
+            pt._legend(ax, shots, line=False)
+        else:
+            ax.legend(handles=[plt.Line2D([], [], color="gray", marker=mk, ls="none", label=lab)
+                               for _, lab, mk in items], fontsize=8, frameon=False,
+                      loc="upper left")
     pt.xy_plot(shots, lambda s: s["thomson_scattering/av_dens"] * 1e-19,
                lambda s: s["thomson_scattering/ne_u"] * 1e-19, xlabel,
                r"$n_{e,u}$ (separatrix, TS) [$10^{19}$ m$^{-3}$]",
