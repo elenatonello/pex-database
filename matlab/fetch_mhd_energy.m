@@ -10,7 +10,7 @@ function M = fetch_mhd_energy(shot, window, dt)
 %   Returns [] (with a warning) if LIUQE fails.
 
 if nargin < 2 || isempty(window), window = [0.6 1.0]; end
-if nargin < 3 || isempty(dt),     dt = 1e-4; end
+if nargin < 3 || isempty(dt),     dt = 5e-4; end
 
 try
     [~, ~, LY] = liuqe(shot, window(1):dt:window(2), 'idml', 1);
@@ -18,7 +18,7 @@ try
     W  = LY.Wk(:)';
     P  = diff(W) ./ diff(t);                            % derivative between samples
     tP = (t(1:end-1) + t(2:end)) / 2;                   % at the midpoints
-    M  = struct('t_dMHD', t, 'dEMHD', interp1(tP, P, t, 'linear', 'extrap'));   % [W]
+    M  = struct('t_dMHD', t, 'dEMHD', interp1(tP, P, t, 'linear', 'extrap'), 'EMHD', W);   % [W]
 catch err
     warning('fetch_mhd_energy:liuqe', '[%d] dEMHD not computed: %s', shot, err.message);
     M = [];

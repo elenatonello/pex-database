@@ -27,6 +27,8 @@ if dtMhd > 0
     if ~isempty(M)
         heating.HEATING.t_dMHD = M.t_dMHD;
         heating.HEATING.dEMHD  = M.dEMHD;
+        heating.HEATING.t_MHD  = M.t_dMHD;
+        heating.HEATING.EMHD   = M.EMHD;        
     end
 end
 
