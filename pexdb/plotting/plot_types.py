@@ -112,7 +112,11 @@ def profile_grid(shots, rows, times, xlabel, color_by="auto", err_style="bar",
                 except Unavailable as ex:
                     _warn(s, row["label"], ex)
                     continue
-                k = int(np.argmin(abs((tax[0] if tax else s.t) - tt)))
+                taxis = tax[0] if tax else s.t
+                if not s.covers(tt, taxis):               # outside the data: leave the column empty
+                    _warn(s, f"t = {tt:g} s", f"outside the data ({taxis[0]:.3f}-{taxis[-1]:.3f} s)")
+                    continue
+                k = int(np.argmin(abs(taxis - tt)))
                 xs = x[k] if x.ndim == 2 else x
                 ys = y[k] * scale
                 es = None if e is None else e[k] * scale

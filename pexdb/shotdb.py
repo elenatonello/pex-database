@@ -43,6 +43,7 @@ class Shot:
         self.path, self.index, self.grid = path, index, grid
         self._cache = {}
         self._slow_cache = {}
+        self._warned = set()
         with h5py.File(path, "r") as f:
             a = f.attrs
             self.shot = int(a["shot"])
@@ -193,11 +194,26 @@ class Shot:
                     out[k] = (v["r"][()], v["z"][()])
         return out
 
+    def covers(self, time, t=None):
+        """True if `time` [s] lies inside the time axis `t` (default: the root axis), allowing one
+        sampling step of tolerance at the ends."""
+        t = self.t if t is None else np.asarray(t)
+        tol = float(np.median(np.diff(t))) if t.size > 1 else 0.0
+        return bool(t[0] - tol <= time <= t[-1] + tol)
+
     def frame(self, time, path=None):
         """Index of the frame closest to `time` [s], in the root time base or, if `path` is
-        given, in the time axis matching self[path] (see time_of)."""
+        given, in the time axis matching self[path] (see time_of). A time outside the data
+        (e.g. 1.5 s in a file that ends at 1.0 s) gives the nearest end frame, with a warning."""
         t = self.t if path is None else self.time_of(path)
-        return int(np.argmin(abs(t - time)))
+        k = int(np.argmin(abs(t - time)))
+        if not self.covers(time, t):
+            key = (round(float(time), 4), float(t[0]), float(t[-1]))
+            if key not in self._warned:
+                self._warned.add(key)
+                print(f"  WARNING: shot {self.shot}: t = {time:g} s is outside the data "
+                      f"({t[0]:.3f}-{t[-1]:.3f} s); using the nearest frame, t = {t[k]:.3f} s")
+        return k
 
     # ---- appearance -------------------------------------------------------
     @property

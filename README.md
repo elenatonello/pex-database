@@ -33,3 +33,14 @@ in the file (`elmy`, `elm_frequency`, `elm_detection`, `elm_times`) and printed 
 `'Mode', 'default'` / `'elm'` force one of them; `'Regime', 'L'|'H'` forces the label (and the base
 in auto mode). `shotdb.load(path)` shows slow data on the fast grid by default; `grid="native"` gives
 each group on its own grid (`shot.time_of(path)`).
+
+### H-mode / ELM analysis
+    python -m pexdb.hmode_analysis $PEX_DB_DIR/shot_87672.h5 --save figures/hm [--t0 0.9 --span 0.06]
+    from pexdb import shotdb, hmode_analysis as ha
+    s = shotdb.load("shot_87672.h5")[0]; times = ha.elm_times(s); tab = ha.elm_table(s, times)
+
+For ELM-mode files (detected ELMy H-modes). ELM times are the IR power peaks (0.1 ms). Figures: zoomed and
+whole-window time traces with the ELMs marked, ELM statistics (frequency, intervals, energy per ELM from the IR
+and from W_MHD, size vs interval), ELM-synchronised averages, and Thomson ne/Te profiles and pedestal against
+the time since the last ELM (only real TS samples, each once, via `t_sample` / `measured`). Sizes use isolated
+ELMs only (neighbours farther than 4.5 ms before / 3.5 ms after).
