@@ -203,6 +203,9 @@ def resample(arr, t, axis, method="auto"):
     if arr.size == 0 or t.size == 0:
         raise Missing("empty array")
     arr, t = align(arr, t, axis)
+    if arr.ndim == 0 or arr.shape[axis] != t.size:
+        raise ValueError(f"array {arr.shape} has {arr.shape[axis] if arr.ndim else 'no'} values along axis {axis} "
+                         f"but its time vector has {t.size} stamps (a trace on another time base?)")
     step = native_step(t)
     if method == "slow":
         method = "hold" if MODE == "elm" else "interpolate"
@@ -290,6 +293,18 @@ def crop(arr, t, axis, eps=1e-6):
     return np.take(arr, np.flatnonzero(k), axis=axis), t[k]
 
 
+def time_for(obj, n, names):
+    """The time vector among obj.<names> that has exactly n samples (first match, in the order
+    given); if none matches, the first one present, so that resample() reports the mismatch."""
+    for k in names:
+        if hasattr(obj, k) and np.size(getattr(obj, k)) == n:
+            return getattr(obj, k)
+    for k in names:
+        if hasattr(obj, k):
+            return getattr(obj, k)
+    raise Missing(f"none of the time vectors {names} exists")
+
+
 def rs_as(obj, mapping, t, axis):
     """Like rs() but renames: mapping = {output_name: source_field}."""
     return {out: resample(getattr(obj, src), t, axis) for out, src in mapping.items()}
@@ -348,7 +363,9 @@ def bolo_geometry(b):
 
 def d_bolo(m):
     b = need_available(get(get(m, "EdgeData"), "BOLO"), "BOLO")
-    sig = resample(b.signals, b.t, 0)                      # (t, measured channels)
+    # the bolometer traces are not always on one time base (t, t_LOS, t_tot, t_emi may differ in
+    # length in some shots): each array takes the time vector that has its length
+    sig = resample(b.signals, time_for(b, np.shape(b.signals)[0], ("t", "t_LOS", "t_tot", "t_emi")), 0)
     ident, geometry = bolo_geometry(b)
     if ident is None:                                      # no geometry: measured channels only
         chn, channels = np.asarray(b.chn), sig
@@ -357,19 +374,23 @@ def d_bolo(m):
         channels = np.full((N_FRAMES, ident.size), np.nan)
         pos = {n: i for i, n in enumerate(ident)}
         miss = [int(n) for n in np.asarray(b.chn) if int(n) not in pos]
-        if miss:
-            raise Missing(f"measured channels without geometry: {miss}")
-        channels[:, [pos[int(n)] for n in np.asarray(b.chn)]] = sig
+        if miss:                                           # geometry does not cover every measured channel
+            print(f"  WARNING: bolometer channels {miss} have no geometry: storing the measured channels "
+                  f"without geometry")
+            chn, channels, geometry = np.asarray(b.chn), sig, {}
+        else:
+            channels[:, [pos[int(n)] for n in np.asarray(b.chn)]] = sig
     return {
         "t": T_FRAMES,
         "channels": channels,                             # (t, channel); NaN = no data
         "channels_units": str(b.dim),
         "chn": chn,
-        "emi": resample(b.emi, b.t_emi, 2),               # (R, Z, t)
+        "emi": resample(b.emi, time_for(b, np.shape(b.emi)[2], ("t_emi", "t", "t_LOS", "t_tot")), 2),   # (R, Z, t)
         "emi_units": "W/m3",                              # assumed
         "r": b.R, "z": b.Z,
-        **rs_as(b, {"power_core": "p_cor", "power_div": "p_div", "power_xpt": "p_xpt"}, b.t, 0),
-        "power_tot": resample(b.p_tot, b.t_tot, 0),
+        **{out: resample(getattr(b, src), time_for(b, np.size(getattr(b, src)), ("t", "t_tot", "t_LOS", "t_emi")), 0)
+           for out, src in {"power_core": "p_cor", "power_div": "p_div", "power_xpt": "p_xpt"}.items()},
+        "power_tot": resample(b.p_tot, time_for(b, np.size(b.p_tot), ("t_tot", "t", "t_LOS", "t_emi")), 0),
         "power_units": "W",                               # assumed
         **geometry,
     }
@@ -842,7 +863,12 @@ def detect_elms(m):
     if hasattr(m, "_elm_detection"):
         return m._elm_detection
     sigs = _elm_signals(m)
-    res = {name: spike_train(t, y, sg) for name, t, y, sg, _ in sigs}
+    res = {}
+    for name, t, y, sg, _ in sigs:
+        try:
+            res[name] = spike_train(t, y, sg)
+        except Exception as e:                               # a bad trace must not stop the build
+            res[name] = {"ok": False, "reason": f"{type(e).__name__}: {e}"}
     divertor = {name: dv for name, _, _, _, dv in sigs}
     avail = {k: v for k, v in res.items() if "times" in v}          # usable (even if no ELMs)
     flagged = {k: v for k, v in avail.items() if v["ok"]}
@@ -1208,7 +1234,10 @@ def build(src, strict=False, mode="auto", t0=None, t1=None, dt_fast=1e-4, dt_slo
         except Exception as e:                             # corrupt/unexpected content
             if strict:
                 raise
-            res = Missing_group(f"conversion failed: {type(e).__name__}: {e}")
+            import traceback
+            fr = traceback.extract_tb(e.__traceback__)[-1]
+            res = Missing_group(f"conversion failed: {type(e).__name__}: {e} "
+                                f"[{os.path.basename(fr.filename)}:{fr.lineno} in {fr.name}]")
         if isinstance(res, Missing_group):
             print(f"  {ids}{'/' + sub if sub else ''} ({tcv}): unavailable ({res.reason})")
         else:
