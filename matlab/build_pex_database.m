@@ -21,7 +21,7 @@ function failed = build_pex_database(shots, outDir, varargin)
 %     'Window'    []      time window [t0 t1] [s]. If given, it is passed to build_database.py as
 %                         --t0 / --t1 and is also the window of the LIUQE dW_MHD/dt fetch. If empty
 %                         the database defaults apply and dW_MHD/dt is fetched over [0.6 1.0]
-%     'MhdStep'   5e-4    time step of dW_MHD/dt [s] (the LIUQE step we can afford; the database stores it
+%     'MhdStep'   2e-4    time step of dW_MHD/dt [s] (the LIUQE step we can afford; the database stores it
 %                         interpolated, with its native step in heating/step_power_mhd)
 %
 %   dW_MHD/dt (LIUQE, slow) is only fetched for ELMy H-mode shots: the shot is first fetched without
@@ -42,7 +42,7 @@ addParameter(p, 'Mode', 'auto');
 addParameter(p, 'Elm', false);
 addParameter(p, 'Args', '');
 addParameter(p, 'Window', []);
-addParameter(p, 'MhdStep', 5e-4);
+addParameter(p, 'MhdStep', 2e-4);
 parse(p, varargin{:});
 o = p.Results;
 

@@ -8,7 +8,7 @@ function S = fetch_shot_data(shot, baffle, window, dtMhd)
 %   S = fetch_shot_data(shot, baffle, window, dtMhd) with dtMhd > 0 also computes the MHD
 %   stored-energy derivative heating.HEATING.dEMHD / t_dMHD from LIUQE on [t0 t1] = window
 %   (default [0.6 1.0]) with step dtMhd [s] (see fetch_mhd_energy). Default dtMhd = 0: not
-%   computed (L-mode shots do not need it, and LIUQE at 0.1 ms is slow); build_pex_database
+%   computed (L-mode shots do not need it, and LIUQE at 0.2 ms is slow); build_pex_database
 %   fetches it separately, only for ELMy shots.
 
 if nargin < 2 || isempty(baffle), baffle = baffle_for_shot(shot); end
