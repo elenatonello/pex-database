@@ -16,12 +16,12 @@ if nargin < 3 || isempty(window), window = [0.6 1.0]; end
 if nargin < 4 || isempty(dtMhd),  dtMhd  = 0; end
 
 CXRSdata    = CXRS_load_MDS(shot, 1, 'result', [], 0, 0);
-LPdata=struct; mdsopen(shot);
-if ~isa(mdsvalue('\results::langmuir:probes'),'char')
-    %Then shot has been analyzed and LP_MDSdld(shot) will work
-    LPdata      = LP_MDSdld(shot);
+LPdata = struct;
+try
+    LPdata = LP_MDSdld(shot);
+catch err
+    warning('fetch_shot_data:LP', '[%d] no Langmuir probe data: %s', shot, err.message);
 end
-mdsclose;
 
 DSSdata_fit = DSS_GetFitResultsMDS(shot);
 
