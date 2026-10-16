@@ -604,7 +604,11 @@ def d_mantis(m):
                   # MATLAB: patch(r_values', z_values', emi(:,it)')
                   "grid": {"r_values": g.R_values, "z_values": g.Z_values,
                            "r_mean": g.R_mean, "z_mean": g.Z_mean, "area": g.Area},
-                  **rs(c, ["lInner", "sFrontInner", "lOuter", "sFrontOuter"], c.t, 0),
+                  # CIII front location and leg lengths: never interpolated (a front that appears, jumps or
+                  # is undefined would get invented positions): window mean in the default mode,
+                  # the nearest real sample (hold) in ELM mode, as the emissivity map
+                  **{n: resample(getattr(c, n), c.t, 0, method="mean" if MODE != "elm" else "auto")
+                     for n in ("lInner", "sFrontInner", "lOuter", "sFrontOuter")},
                   **sample_info(c.t)}
     if not out:
         raise Missing("no cameras")
