@@ -16,7 +16,13 @@ if nargin < 3 || isempty(window), window = [0.6 1.0]; end
 if nargin < 4 || isempty(dtMhd),  dtMhd  = 0; end
 
 CXRSdata    = CXRS_load_MDS(shot, 1, 'result', [], 0, 0);
-LPdata      = LP_MDSdld(shot);
+LPdata=struct; mdsopen(shot);
+if ~isa(mdsvalue('\results::langmuir:probes'),'char')
+    %Then shot has been analyzed and LP_MDSdld(shot) will work
+    LPdata      = LP_MDSdld(shot);
+end
+mdsclose;
+
 DSSdata_fit = DSS_GetFitResultsMDS(shot);
 
 EdgeData = get_edge_data(shot, [], 'l', {'TS', 'MANTIS', 'DSS', 'APG', 'BAR', 'VALVE', 'IR', 'BOLO'});
