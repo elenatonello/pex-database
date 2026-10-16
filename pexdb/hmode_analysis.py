@@ -166,8 +166,12 @@ def elm_report(s, times, tab=None):
     stat("IR VIR energy per ELM (outer)", "ir_vir_energy", 1e-3, "kJ")
     stat("W_MHD loss per ELM (stored energy)", "dW_stored", 1e-3, "kJ")
     stat("W_MHD loss per ELM (dEMHD integral)", "dW_power", 1e-3, "kJ")
-    if "heating/power_mhd" in [p for _, p, _ in TRACES] and s.has("heating/power_mhd"):
-        lines.append("  note: dEMHD has a strong ~1.2 kHz ripple (check its spectrum); single-ELM dEMHD is noisy")
+    if s.has("heating/power_mhd"):
+        st = s.attr("heating", "step_power_mhd")
+        if st is not None and st >= 4e-4:
+            lines.append(f"  note: dEMHD comes from LIUQE at {1e3 * st:.1f} ms: ELM dips are broadened (~1 ms FWHM) and "
+                         "their peak underestimated; the integrals (energy per ELM) are not affected")
+        lines.append("  note: dEMHD has a ~1.2 kHz ripple (+-1 MW), so single-ELM dEMHD is noisy")
     return "\n".join(lines)
 
 

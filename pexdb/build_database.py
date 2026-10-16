@@ -26,7 +26,7 @@ is an attribute-free scalar dataset. Time is the first axis, except where
 noted in the `layout` attribute of a group or in the docs below.
 
 Usage: python3 -m pexdb.build_database STRUCTexp.mat [out_dir] [--strict] [--mode=auto|default|elm]
-         [--regime=L|H] [--t0=0.6] [--t1=1.0] [--dt-fast=1e-4] [--dt-slow=5e-3] [--mhd=mhd.mat]
+         [--regime=L|H] [--t0=0.6] [--t1=1.0] [--dt-fast=1e-4] [--dt-slow=5e-3] [--mhd=mhd.mat]  (mat file with t_dMHD, dEMHD and optionally EMHD)
        python3 -m pexdb.build_database STRUCTexp.mat --detect      # prints ELMY=0|1 only
 The time base is chosen automatically (--mode=auto, default): ELMy H-mode shots (detected from the
 data, see detect_elms) get the ELM-resolved base (0.6-1.0 s; heating, valve, pressure gauges and IR on a
@@ -805,8 +805,10 @@ def elm_energy_drop(times, m):
     events with a drop, and the mean drop relative to W. None if W_MHD (heating.HEATING.EMHD with
     a consistent t_MHD) is not available. Random times give t ~ 0 +- 1 (min about -4)."""
     try:
-        h = m.heating.HEATING
-        tw, w = np.asarray(h.t_MHD, float).ravel(), np.asarray(h.EMHD, float).ravel()
+        # the whole-shot 1 ms W_MHD if it was replaced by the (shorter) LIUQE trace: more ELMs, so a
+        # stronger test, independent of the fetch window
+        tw, w = getattr(m, "_mhd_native", None) or (m.heating.HEATING.t_MHD, m.heating.HEATING.EMHD)
+        tw, w = np.asarray(tw, float).ravel(), np.asarray(w, float).ravel()
         if tw.size != w.size or tw.size < 50 or len(times) < 5:
             return None
     except Exception:
@@ -1039,6 +1041,8 @@ def d_heating(m):
     Sources absent from the struct are simply left out."""
     h = need_available(get(get(m, "heating"), "HEATING"), "heating")
     out = {"power_units": "W", "energy_units": "J"}           # units ASSUMED
+    # step_<quantity>: native step of each trace [s]; the stored 'power_mhd' / 'energy_mhd' are
+    # interpolated to the database grid, so they are not resolved below their native step
     regime = shot_info(m).get("regime", "")
     for tname, dname, src, kind in HEATING_SOURCES:
         if hasattr(h, tname) and hasattr(h, dname) and np.size(getattr(h, tname)) != np.size(getattr(h, dname)):
@@ -1052,6 +1056,7 @@ def d_heating(m):
                       f"the database window is {T_START}-{T_END} s: {kind}_{src} is NaN outside "
                       f"(fetch it over the same window: build_pex_database 'Window')")
             out[f"t_{src}"] = T_FRAMES
+            out[f"step_{kind}_{src}"] = native_step(tt)   # [s] native sampling step of this trace
             if src == "nbi" and regime == "L":
                 # L-mode: NBI is a (fast-modulated) diagnostic beam, much faster than the
                 # sampling, so keep the energy: constant mean power over the window.
@@ -1062,7 +1067,7 @@ def d_heating(m):
                 print(f"  NBI (L-mode): constant mean power {p:.4g} W over {T_START}-{T_END} s")
             else:
                 out[f"{kind}_{src}"] = resample(getattr(h, dname), getattr(h, tname), 0)
-    if len(out) == 2:
+    if not any(k.startswith("t_") for k in out):
         raise Missing("no heating sources")
     return out
 
@@ -1169,7 +1174,11 @@ def build(src, strict=False, mode="auto", t0=None, t1=None, dt_fast=1e-4, dt_slo
     if mhd_file:                                           # dW_MHD/dt fetched separately (ELMy shots only)
         mm = sio.loadmat(mhd_file, squeeze_me=True)
         if hasattr(getattr(m, "heating", None), "HEATING"):
-            m.heating.HEATING.t_dMHD, m.heating.HEATING.dEMHD = mm["t_dMHD"], mm["dEMHD"]
+            H = m.heating.HEATING
+            H.t_dMHD, H.dEMHD = mm["t_dMHD"], mm["dEMHD"]
+            if "EMHD" in mm:                               # LIUQE W_MHD on the same time stamps replaces
+                m._mhd_native = (np.asarray(H.t_MHD), np.asarray(H.EMHD))   # the 1 ms one (as fetch_shot_data.m
+                H.t_MHD, H.EMHD = mm["t_dMHD"], mm["EMHD"]                  # does); keep it for the ELM check
         else:
             print("  WARNING: --mhd given but the source has no heating struct")
     det = detect_elms(m)
