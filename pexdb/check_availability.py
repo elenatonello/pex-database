@@ -17,6 +17,10 @@ Usage:
   python3 -m pexdb.check_availability $PEX_DB_DIR --diag TS --list  # shots where TS is not OK
   python3 -m pexdb.check_availability $PEX_DB_DIR --csv status.csv
 
+In the VALVE column the table prints the names of the valves that have data (V1, V1,V3, ...), with a
+~ if other valves of the file have none; --detail lists every valve with its gas and status
+(e.g. V2 gas He EMPTY), and --diag V1 checks that single valve.
+
 --diag takes the column names of the table (BOLO, FIR, VALVE, TS, LP, HIR, VIR, BAR, APG, MANTIS,
 LIUQE, CXRS, DSS, HEAT, WALL), IDS group names, or any path inside the file
 (e.g. spectrometer_visible/sys12). Exit status: 0 if every requested diagnostic is OK or PARTIAL in
@@ -28,6 +32,7 @@ From Python:
 """
 import argparse
 import csv
+import re
 import glob
 import os
 import sys
@@ -98,6 +103,20 @@ def assess(f, path):
     fr = [x for _, x in acc["finite"]]
     res = {"status": "OK", "reason": "", "finite": float(np.mean(fr)) if fr else None,
            "parts_missing": acc["missing"], "n_data": len(fr)}
+    if path == "gas_injection" and isinstance(node, h5py.Group) and "valve" in node:
+        # every valve is its own measurement: some without data is a partial diagnostic
+        for vn, vg in node["valve"].items():
+            if isinstance(vg, h5py.Group) and vg.attrs.get("available", 1) != 0:
+                vf = []
+                _acc = {"finite": [], "missing": []}
+                _walk(vg, vn, _acc)
+                vf = [x for _, x in _acc["finite"]]
+                if vf and max(vf) == 0.0:
+                    acc["missing"].append((f"valve/{vn}", "no flow data (all NaN)"))
+        if acc["missing"] and fr and max(fr) > 0.0:
+            res["status"] = "PARTIAL"
+            res["reason"] = "; ".join(f"{pp.rsplit('/', 1)[-1]}: {r}" for pp, r in acc["missing"])
+            return res
     if fr and max(fr) == 0.0:
         res["status"], res["reason"] = "EMPTY", "all measurement datasets are NaN"
     elif acc["missing"]:
@@ -121,6 +140,27 @@ def file_info(path):
                 "elmy": ("yes" if a.get("elmy", 0) else "no") if "elmy" in a else "?"}
 
 
+def valves(path):
+    """The gas valves in a file: [{'name', 'gas', 'status', 'finite'}] (empty if gas_injection is missing)."""
+    out = []
+    with h5py.File(path, "r") as f:
+        base = "gas_injection/valve"
+        if "gas_injection" not in f or f["gas_injection"].attrs.get("available", 1) == 0 or "valve" not in f["gas_injection"]:
+            return out
+        for name, obj in f[base].items():
+            if not isinstance(obj, h5py.Group):
+                continue
+            r = assess(f, f"{base}/{name}")
+            out.append({"name": name, "gas": str(obj.attrs.get("species_name", "?")), "status": r["status"],
+                        "finite": r["finite"], "reason": r["reason"]})
+    return out
+
+
+def valve_text(vl):
+    """'V1(D2) V2(He)[EMPTY]' for a list from valves(); '-' if there are none."""
+    return " ".join(f"{v['name']}({v['gas']})" + ("" if v["status"] == "OK" else f"[{v['status']}]") for v in vl) or "-"
+
+
 def resolve_columns(names):
     """--diag names -> {label: path}."""
     if not names:
@@ -130,6 +170,8 @@ def resolve_columns(names):
         key = ALIASES.get(n.upper(), n.upper())
         if key in COLUMNS:
             out[key] = COLUMNS[key]
+        elif re.fullmatch(r"V\d+", n, re.I):                # a single gas valve: V1, V2, ...
+            out[n.upper()] = f"gas_injection/valve/{n.upper()}"
         else:
             out[n] = n                                      # an IDS group name or a path
     return out
@@ -169,21 +211,33 @@ def main(argv=None):
         sys.exit(1)
 
     # ---- table ----
-    w = max(len(c) for c in cols) + 1
-    head = (f"{'shot':>7s} {'mode':>4s} {'ELMy?':>5s} {'baffle':>6s} | " + " ".join(f"{c:>{w}s}" for c in cols)
+    vl = {fn: valves(fn) for fn, _, _ in rows}                       # valves per file
+
+    def cell(fn, c, r):
+        """# . ~ 0 symbol; for the valve column(s) the names of the valves that have data (V1,V3...)."""
+        sym = SYMBOL[r["status"]]
+        if c == "VALVE":
+            ok = [v["name"] for v in vl[fn] if v["status"] == "OK"]
+            return ",".join(ok) + ("~" if ok and len(ok) < len(vl[fn]) else "") if ok else sym
+        if re.fullmatch(r"V\d+", c) and r["status"] == "OK":
+            return c
+        return sym
+    cells = {fn: {c: cell(fn, c, res[c]) for c in cols} for fn, _, res in rows}
+    wid = {c: max(len(c), max(len(cells[fn][c]) for fn in cells)) for c in cols}
+    head = (f"{'shot':>7s} {'mode':>4s} {'ELMy?':>5s} {'baffle':>6s} | " + " ".join(f"{c:>{wid[c]}s}" for c in cols)
             + " | file")
     print(head)
     print("-" * len(head))
     for fn, info, res in rows:
         print(f"{str(info['shot']):>7s} {info['mode']:>4s} {info['elmy']:>5s} {info['baffle']:>6s} | "
-              + " ".join(f"{SYMBOL[res[c]['status']]:>{w}s}" for c in cols) + f" | {os.path.basename(fn)}")
+              + " ".join(f"{cells[fn][c]:>{wid[c]}s}" for c in cols) + f" | {os.path.basename(fn)}")
     print("-" * len(head))
     print("#" + " ok   ~ partial   0 empty (available, all NaN)   . missing")
     cnt = {c: {k: 0 for k in SYMBOL} for c in cols}
     for _, _, res in rows:
         for c in cols:
             cnt[c][res[c]["status"]] += 1
-    print(f"{'files ok':>22s} | " + " ".join(f"{cnt[c]['OK']:>{w}d}" for c in cols) + f" | of {len(rows)} files")
+    print(f"{'files ok':>22s} | " + " ".join(f"{cnt[c]['OK']:>{wid[c]}d}" for c in cols) + f" | of {len(rows)} files")
 
     # ---- details ----
     if args.detail:
@@ -192,6 +246,13 @@ def main(argv=None):
             for c, r in res.items():
                 fr = "" if r["finite"] is None else f"{100 * r['finite']:5.1f}% finite"
                 print(f"  {c:8s} {r['status']:8s} {fr:14s} {r['reason']}")
+                if c == "VALVE":
+                    for v in valves(fn) or [None]:
+                        if v is None:
+                            print("      (no valve stored)")
+                        else:
+                            vf = "" if v["finite"] is None else f"{100 * v['finite']:5.1f}% finite"
+                            print(f"      {v['name']:5s} gas {v['gas']:6s} {v['status']:8s} {vf:14s} {v['reason']}")
     if args.list:
         print()
         for c in cols:
@@ -201,10 +262,10 @@ def main(argv=None):
     if args.csv:
         with open(args.csv, "w", newline="") as fh:
             wr = csv.writer(fh)
-            wr.writerow(["file", "shot", "mode", "elmy", "baffle", "time_base"] + [f"{c}" for c in cols]
+            wr.writerow(["file", "shot", "mode", "elmy", "baffle", "time_base", "valves"] + [f"{c}" for c in cols]
                         + [f"{c}_finite" for c in cols])
             for fn, info, res in rows:
-                wr.writerow([os.path.basename(fn), info["shot"], info["mode"], info["elmy"], info["baffle"], info["time_base"]]
+                wr.writerow([os.path.basename(fn), info["shot"], info["mode"], info["elmy"], info["baffle"], info["time_base"], valve_text(vl[fn]).replace(" ", ";")]
                             + [res[c]["status"] for c in cols]
                             + ["" if res[c]["finite"] is None else f"{res[c]['finite']:.3f}" for c in cols])
         print(f"\nwrote {args.csv}")

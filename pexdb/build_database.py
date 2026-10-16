@@ -427,7 +427,12 @@ def d_valve(m):
     out = {"valve": {}}
     for k in [n for n in valve._fieldnames if n != "available"]:
         v = getattr(valve, k)
-        flow = resample(v.flow, v.t, 0)                    # particles/s (molecules assumed)
+        try:
+            flow = resample(v.flow, v.t, 0)                # particles/s (molecules assumed)
+        except (Missing, ValueError, AttributeError) as e:  # one bad valve must not hide the others
+            out["valve"][k] = Missing_group(str(e))
+            print(f"  gas_injection/valve/{k}: unavailable ({e})")
+            continue
         out["valve"][k] = {
             "t": T_FRAMES,
             "species_name": str(v.gas),
@@ -436,8 +441,9 @@ def d_valve(m):
             "flow_rate_units": "Pa.m^3.s^-1",
             "flow_particles": flow,                        # original TCV quantity
             "flow_particles_units": str(v.units)}
-    if not out["valve"]:
-        raise Missing("no valves")
+    if all(isinstance(v, Missing_group) for v in out["valve"].values()):      # (Missing_group is a dict too)
+        raise Missing("no valves" if not out["valve"] else
+                      "no valve has data: " + "; ".join(f"{k}: {v.reason}" for k, v in out["valve"].items()))
     return out
 
 
