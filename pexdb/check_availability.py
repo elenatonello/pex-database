@@ -7,6 +7,9 @@ A diagnostic is one of:
   0  EMPTY    flagged available, but every measurement dataset is NaN (coordinates / geometry ignored)
   .  MISSING  not available (the file stores the reason)
 
+The table has one row per file: shot, mode (L or H), ELMy? (yes/no), baffle (SILO/NINO), then the
+diagnostics ('?' when the file does not say; the time base, elm or default, is in --detail and the csv).
+
 Usage:
   python3 -m pexdb.check_availability $PEX_DB_DIR                   # table: one row per shot
   python3 -m pexdb.check_availability shot_87672.h5 --detail        # reasons, parts, % finite data
@@ -113,7 +116,8 @@ def file_info(path):
     with h5py.File(path, "r") as f:
         a = f.attrs
         return {"shot": int(a["shot"]) if "shot" in a else os.path.basename(path),
-                "mode": str(a.get("time_mode", "default")), "regime": str(a.get("regime", "?")),
+                "time_base": str(a.get("time_mode", "default")), "mode": str(a.get("regime", "?")) or "?",
+                "baffle": str(a.get("baffle", "?")) or "?",
                 "elmy": ("yes" if a.get("elmy", 0) else "no") if "elmy" in a else "?"}
 
 
@@ -166,12 +170,12 @@ def main(argv=None):
 
     # ---- table ----
     w = max(len(c) for c in cols) + 1
-    head = (f"{'shot':>7s} {'mode':7s} {'reg':3s} {'ELMy':4s} | " + " ".join(f"{c:>{w}s}" for c in cols)
+    head = (f"{'shot':>7s} {'mode':>4s} {'ELMy?':>5s} {'baffle':>6s} | " + " ".join(f"{c:>{w}s}" for c in cols)
             + " | file")
     print(head)
     print("-" * len(head))
     for fn, info, res in rows:
-        print(f"{str(info['shot']):>7s} {info['mode']:7s} {info['regime']:3s} {info['elmy']:4s} | "
+        print(f"{str(info['shot']):>7s} {info['mode']:>4s} {info['elmy']:>5s} {info['baffle']:>6s} | "
               + " ".join(f"{SYMBOL[res[c]['status']]:>{w}s}" for c in cols) + f" | {os.path.basename(fn)}")
     print("-" * len(head))
     print("#" + " ok   ~ partial   0 empty (available, all NaN)   . missing")
@@ -184,7 +188,7 @@ def main(argv=None):
     # ---- details ----
     if args.detail:
         for fn, info, res in rows:
-            print(f"\n{os.path.basename(fn)}  (shot {info['shot']}, {info['mode']} mode, regime {info['regime']})")
+            print(f"\n{os.path.basename(fn)}  (shot {info['shot']}, {info['mode']}-mode, ELMy {info['elmy']}, baffle {info['baffle']}, time base {info['time_base']})")
             for c, r in res.items():
                 fr = "" if r["finite"] is None else f"{100 * r['finite']:5.1f}% finite"
                 print(f"  {c:8s} {r['status']:8s} {fr:14s} {r['reason']}")
@@ -197,9 +201,10 @@ def main(argv=None):
     if args.csv:
         with open(args.csv, "w", newline="") as fh:
             wr = csv.writer(fh)
-            wr.writerow(["file", "shot", "mode", "regime", "elmy"] + [f"{c}" for c in cols] + [f"{c}_finite" for c in cols])
+            wr.writerow(["file", "shot", "mode", "elmy", "baffle", "time_base"] + [f"{c}" for c in cols]
+                        + [f"{c}_finite" for c in cols])
             for fn, info, res in rows:
-                wr.writerow([os.path.basename(fn), info["shot"], info["mode"], info["regime"], info["elmy"]]
+                wr.writerow([os.path.basename(fn), info["shot"], info["mode"], info["elmy"], info["baffle"], info["time_base"]]
                             + [res[c]["status"] for c in cols]
                             + ["" if res[c]["finite"] is None else f"{res[c]['finite']:.3f}" for c in cols])
         print(f"\nwrote {args.csv}")
