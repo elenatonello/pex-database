@@ -10,7 +10,7 @@ function M = fetch_mhd_energy(shot, window, dt)
 %   Returns [] (with a warning) if LIUQE fails.
 
 if nargin < 2 || isempty(window), window = [0.6 1.0]; end
-if nargin < 3 || isempty(dt),     dt = 5e-4; end
+if nargin < 3 || isempty(dt),     dt = 2e-4; end
 
 try
     [~, ~, LY] = liuqe(shot, window(1):dt:window(2), 'idml', 1);
