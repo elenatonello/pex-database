@@ -25,7 +25,7 @@ end
 
 DSSdata_fit = DSS_GetFitResultsMDS(shot);
 
-EdgeData = get_edge_data(shot, [], 'l', {'TS', 'MANTIS', 'DSS', 'APG', 'BAR', 'VALVE', 'IR', 'BOLO'});
+EdgeData = get_edge_data_tmp(shot, [], 'l', {'TS', 'MANTIS', 'DSS', 'APG', 'BAR', 'VALVE', 'IR', 'BOLO'},'MANTIS_front_type',2);
 FIRdata  = fir_getdata(shot);
 heating  = get_edge_data(shot, [], '', {'HEATING'});
 if dtMhd > 0
