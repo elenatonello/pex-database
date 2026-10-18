@@ -604,20 +604,38 @@ def d_mantis(m):
                   # MATLAB: patch(r_values', z_values', emi(:,it)')
                   "grid": {"r_values": g.R_values, "z_values": g.Z_values,
                            "r_mean": g.R_mean, "z_mean": g.Z_mean, "area": g.Area},
-                  # CIII front location and leg lengths: never interpolated (a front that appears, jumps or
-                  # is undefined would get invented positions): window mean in the default mode,
-                  # the nearest real sample (hold) in ELM mode, as the emissivity map
-                  **{n: resample(getattr(c, n), c.t, 0, method="mean" if MODE != "elm" else "auto")
-                     for n in ("lInner", "sFrontInner", "lOuter", "sFrontOuter")},
+                  # The CIII front (c.sFront*, c.l*) is NOT stored: its definition involves analysis choices
+                  # and the MANTIS routine gave wrong values. It is computed from `emi` and the equilibrium
+                  # by pexdb.ciii_front.
                   **sample_info(c.t)}
     if not out:
         raise Missing("no cameras")
     return out
 
 
+def lower_xpoint_series(q):
+    """Lower X-point (R, Z) at every LIUQE time: of the X-points of a time slice (LIUQE gives up to two, with
+    0 for a missing one) the one with the smallest Z that lies below the magnetic axis; NaN where there is
+    none."""
+    r, z = np.atleast_2d(np.asarray(q.r_xpts, float)), np.atleast_2d(np.asarray(q.z_xpts, float))
+    nt = np.size(q.t)
+    if r.shape[1] != nt and r.shape[0] == nt:                 # (t, 2) -> (2, t)
+        r, z = r.T, z.T
+    zax = np.asarray(q.z_axis, float).ravel()
+    ok = np.isfinite(r) & np.isfinite(z) & (r > 0) & (z < zax[None, :])
+    zz = np.where(ok, z, np.inf)
+    i = np.argmin(zz, axis=0)
+    cols = np.arange(nt)
+    has = np.isfinite(zz[i, cols])
+    return np.where(has, r[i, cols], np.nan), np.where(has, z[i, cols], np.nan)
+
+
 def d_liuqe(m):
     q = need_available(get(get(m, "EdgeData"), "LIUQE"), "LIUQE")
+    rx, zx = lower_xpoint_series(q)
     return {"t": T_FRAMES, "r": q.R, "z": q.Z,
+            # lower X-point [m] (NaN if none), used by pexdb.ciii_front
+            "r_xpt": resample(rx, q.t, 0), "z_xpt": resample(zx, q.t, 0),
             "psi": resample(q.psi, q.t, 2),               # (R, Z, t)
             "ip": resample(q.i_p, q.t, 0), "ip_units": "A",
             "b0": resample(q.b_zero, q.t, 0), "b0_units": "T",   # vacuum toroidal field

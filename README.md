@@ -44,3 +44,26 @@ whole-window time traces with the ELMs marked, ELM statistics (frequency, interv
 and from W_MHD, size vs interval), ELM-synchronised averages, and Thomson ne/Te profiles and pedestal against
 the time since the last ELM (only real TS samples, each once, via `t_sample` / `measured`). Sizes use isolated
 ELMs only (neighbours farther than 4.5 ms before / 3.5 ms after).
+
+### CIII front (MANTIS)
+The database stores the reconstructed CIII emissivity (`camera_visible/CIII_cam1/emi` on the triangle mesh + `grid`)
+and the equilibrium (`equilibrium/psi`, lower X-point `r_xpt`, `z_xpt`), **not** the front position: its definition
+involves analysis choices, so it is computed from the emissivity when needed.
+
+    from pexdb import shotdb, ciii_front
+    s = shotdb.load("shot_88306.h5")[0]
+    r = ciii_front.ciii_front(s)             # r["outer"], r["inner"]: front [m from the target]; r["l"]: leg lengths
+    r = ciii_front.ciii_front(s, dss=True)          # + front from the DSS CIII chords, r["dss"] (~ +5 s)
+    r = ciii_front.ciii_front(s, uncertainty=True)  # + 16-84 % band over analysis variants (~ +40 s per shot)
+    python -m pexdb.plotting.ciii_plots $PEX_DB_DIR/shot_88306.h5 --save figures/ciii   # profiles, emissivity frames, MANTIS vs DSS
+
+The method (read the docstring of `pexdb/ciii_front.py`): emission profile along each divertor leg (separatrix
+from the target to the X-point, continued above the X-point), reference = maximum of the leg shoulder (the zone
+around the X-point is ignored), front = 50 % point on the target side of it; if the shoulder is gone the X-point
+peak is the reference and the front can be at / above the X-point. Parameters are constants at the top of the
+module. With `dss=True`, `r["dss"]` holds the outer-leg front from the divertor spectrometer (CIII triplet chords, only chords that do
+not see the inner leg / X-point, so it cannot see a front above ~0.33 m from the target) and the same obtained by
+integrating the MANTIS emissivity along the DSS lines of sight. Files built before `r_xpt` was stored get the X-point from `psi`; older files may also hold the legacy
+`sFront*` / `l*` of the MANTIS routine, which are not used (they were wrong in several shots). Not yet validated
+against an independent measurement.
+

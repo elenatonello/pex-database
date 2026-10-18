@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "pexdb"
 version = "0.1.0"
 requires-python = ">=3.8"
-dependencies = ["numpy", "scipy", "h5py", "matplotlib"]
+dependencies = ["numpy", "scipy", "h5py", "matplotlib", "contourpy"]
 
 [tool.setuptools.packages.find]
 include = ["pexdb*"]
