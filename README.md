@@ -46,6 +46,9 @@ the time since the last ELM (only real TS samples, each once, via `t_sample` / `
 ELMs only (neighbours farther than 4.5 ms before / 3.5 ms after).
 
 ### CIII front (MANTIS)
+`camera_visible/CIII_cam1/vpar` (if the MANTIS struct has it) is the parallel velocity of the ions that emit the
+light, i.e. C2+ for the CIII camera, reconstructed with coherence imaging spectroscopy (CIS), on the same triangles
+as `emi`.
 The database stores the reconstructed CIII emissivity (`camera_visible/CIII_cam1/emi` on the triangle mesh + `grid`)
 and the equilibrium (`equilibrium/psi`, lower X-point `r_xpt`, `z_xpt`), **not** the front position: its definition
 involves analysis choices, so it is computed from the emissivity when needed.

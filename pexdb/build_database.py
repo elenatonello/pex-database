@@ -592,14 +592,32 @@ def d_apg(m):
                         "pressure_mic": "p_mic", "pressure_top": "p_top"}, a.t, 0)}
 
 
+def mantis_vpar(c):
+    """Parallel velocity of the ions that emit the light (C2+ for the CIII camera), reconstructed with coherence
+    imaging spectroscopy (CIS), on exactly the same triangle mesh as the emissivity: (triangle, t), resampled like
+    `emi`. Optional: None if the struct has no `vpar` or it is empty (the MATLAB code returns vpar = [] when
+    there is none), so structs without it still build."""
+    if not hasattr(c, "vpar") or np.size(c.vpar) == 0:
+        return None
+    v = np.asarray(c.vpar, dtype=float)
+    if v.shape != np.shape(c.emi):
+        raise ValueError(f"MANTIS vpar has shape {v.shape}, expected {np.shape(c.emi)} (same grid as emi)")
+    return resample(v, c.t, 1)
+
+
 def d_mantis(m):
     mt = need_available(get(get(m, "EdgeData"), "MANTIS"), "MANTIS")
     out = {}
     for k in [n for n in mt._fieldnames if n != "available"]:
         c = getattr(mt, k)
         g = c.grid
+        vpar = mantis_vpar(c)
         out[k] = {"t": T_FRAMES,
                   "emi": resample(c.emi, c.t, 1),         # (triangle, t)
+                  # parallel velocity of the emitting ion (C2+ for CIII) from CIS, same mesh as emi
+                  **({"vpar": vpar, "vpar_description": "parallel velocity of the emitting ion (C2+ for the CIII "
+                      "camera), reconstructed with coherence imaging spectroscopy (CIS); same triangles as emi"}
+                     if vpar is not None else {}),
                   # triangle j has vertices (r_values[j,:], z_values[j,:]);
                   # MATLAB: patch(r_values', z_values', emi(:,it)')
                   "grid": {"r_values": g.R_values, "z_values": g.Z_values,
