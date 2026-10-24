@@ -5,6 +5,7 @@
     s = shotdb.load("shot_88306.h5")[0]
     ciii_plots.ciii_profiles(s, times=(0.8, 1.0, 1.2, 1.4))   # emission along the two branches, front marked
     ciii_plots.ciii_frames(s, times=(0.8, 1.0, 1.2, 1.4))     # emissivity maps with separatrix and front
+    ciii_plots.ciii_frames(s, quantity="both", front=False)   # emissivity and C2+ parallel velocity (CIS)
     ciii_plots.ciii_vs_dss(s)                                 # outer-leg front: MANTIS vs DSS
 
     python3 -m pexdb.plotting.ciii_plots $PEX_DB_DIR/shot_88306.h5 --save figures/ciii
@@ -65,57 +66,113 @@ def ciii_profiles(shot, times=(0.8, 1.0, 1.2, 1.4, 1.5), result=None):
     return fig
 
 
-def ciii_frames(shot, times=(0.7, 0.85, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5), result=None, log=False):
-    """Contact sheet of the CIII emissivity maps (lower divertor) with separatrix, X-point and front."""
-    r = result or cf.ciii_front(shot)
+def ciii_frames(shot, times=(0.7, 0.85, 1.0, 1.1, 1.2, 1.3, 1.4, 1.5), result=None, log=False,
+                quantity="emi", front=True, separatrix=True, vmax=None, vlim=None, mask_frac=0.03):
+    """Maps of the CIII camera in the lower divertor, one column per time.
+
+    quantity   'emi' (emissivity), 'vpar' (parallel velocity of the emitting ion, C2+ for CIII, from CIS;
+               same triangles as emi) or 'both' (emi on the top row, vpar below).
+    front      mark the CIII front (red; circle = inner, square = outer; needs the front computation,
+               result = ciii_front(shot) is computed if not given). Legacy stored fronts of old files: green.
+    separatrix draw the whole separatrix (psi = 0 contour of the equilibrium: plasma boundary and both legs)
+               and the X-point (the X-point is also drawn when front=True).
+    vmax       upper limit of the emissivity colour scale (default: 99.8 percentile of the plotted frames);
+               log: logarithmic emissivity scale.
+    vlim       limit of the symmetric vpar colour scale (default: 98th percentile of |vpar|).
+    mask_frac  vpar is only shown where the emissivity of that frame exceeds mask_frac x its maximum
+               (CIS gives no meaningful velocity without light); None shows it everywhere.
+    Returns the figure. With 'both' the number of columns is the number of times (up to 6)."""
+    if quantity not in ("emi", "vpar", "both"):
+        raise ValueError("quantity must be 'emi', 'vpar' or 'both'")
     s = cf._native(shot)
     C, L = cf.build_CL(s)
+    have_vpar = hasattr(C, "vpar")
+    if quantity in ("vpar", "both") and not have_vpar:
+        raise ValueError(f"shot {shot.shot}: no camera_visible/CIII_cam1/vpar in this file (the MANTIS struct "
+                         "had no vpar, or the database was built with a version of build_database.py "
+                         "without it)")
+    r = (result or cf.ciii_front(shot)) if front else None
     wall = s.wall().get("tiles")
     g = C.grid
     verts = np.stack([g.R_values, g.Z_values], axis=-1)
     div = g.Z_mean < ZDIV
     t = C.t
     pick = [int(np.argmin(abs(t - tt))) for tt in times if tt <= t[-1] + 1e-9]
-    vmax = np.nanpercentile(C.emi[np.ix_(div, pick)], 99.8)
-    norm = plt.matplotlib.colors.LogNorm(vmax * 1e-3, vmax) if log else plt.matplotlib.colors.Normalize(0, vmax)
-    nc = min(4, len(pick))
-    nr = int(np.ceil(len(pick) / nc))
-    fig, axes = plt.subplots(nr, nc, figsize=(4.4 * nc, 6.6 * nr), sharex=True, sharey=True, squeeze=False)
-    for ax, i in zip(axes.ravel(), pick):
-        pc = PolyCollection(verts[div], cmap="inferno", norm=norm, edgecolors="none")
-        pc.set_array(C.emi[div, i])
+    mpl = plt.matplotlib
+    vmax_e = vmax or np.nanpercentile(C.emi[np.ix_(div, pick)], 99.8)
+    norm_e = mpl.colors.LogNorm(vmax_e * 1e-3, vmax_e) if log else mpl.colors.Normalize(0, vmax_e)
+    if have_vpar and quantity != "emi":
+        vl = vlim or float(np.nanpercentile(np.abs(C.vpar[np.ix_(div, pick)]), 98))
+        norm_v = mpl.colors.Normalize(-vl, vl)
+    unit = s.attr("camera_visible/CIII_cam1", "vpar_units", "as stored")
+    qs = ["emi", "vpar"] if quantity == "both" else [quantity]
+    if quantity == "both":
+        pick = pick[:6]
+        nr, nc = 2, len(pick)
+        order = [(q, i) for q in qs for i in pick]
+    else:
+        nc = min(4, len(pick))
+        nr = int(np.ceil(len(pick) / nc))
+        order = [(quantity, i) for i in pick]
+    fig, axes = plt.subplots(nr, nc, figsize=(4.0 * nc + 0.9, 6.0 * nr), sharex=True, sharey=True,
+                             squeeze=False, layout="constrained")
+    pcs = {}
+    for ax, (q, i) in zip(axes.ravel(), order):
+        if q == "emi":
+            pc = PolyCollection(verts[div], cmap="inferno", norm=norm_e, edgecolors="none")
+            pc.set_array(C.emi[div, i])
+            ax.set_facecolor("k")
+            wall_col = "w"
+        else:
+            v = np.array(C.vpar[div, i], float)
+            if mask_frac is not None:
+                v[C.emi[div, i] < mask_frac * np.nanmax(C.emi[div, i])] = np.nan
+            pc = PolyCollection(verts[div], cmap="RdBu_r", norm=norm_v, edgecolors="none")
+            pc.set_array(np.ma.masked_invalid(v))
+            ax.set_facecolor("0.85")
+            wall_col = "k"
         ax.add_collection(pc)
+        pcs[q] = pc
         if wall is not None:
-            ax.plot(*wall, color="w", lw=1.2)
-        k = int(np.argmin(abs(L.t - t[i])))
-        br = cf.branches(L, k)
-        ax.plot(*br["xpt"], "x", color="c", ms=8, mew=2)
+            ax.plot(*wall, color=wall_col, lw=1.2)
         txt = []
-        for name, mk in (("inner", "o"), ("outer", "s")):
-            if name not in br:
-                continue
-            ax.plot(br[name][0], br[name][1], color="c", lw=1)
-            pt = cf.point_at(br[name], r[name][i])
-            if pt is not None:
-                ax.plot(*pt, mk, mfc="r", mec="w", ms=9, mew=1)
-            st = r["stored"][name][i]
-            if np.isfinite(st):
-                pt = cf.point_at(br[name], st)
-                ax.plot(*pt, mk, mfc="none", mec="lime", ms=14, mew=2.5)
-            txt.append(f"{name[:3]}: front {r[name][i]:.2f} m (l={r['l'][name][i]:.2f})")
+        if front or separatrix:
+            k = int(np.argmin(abs(L.t - t[i])))
+            br = cf.branches(L, k)
+            sep_col = "c" if q == "emi" else "k"
+            ax.plot(*br["xpt"], "x", color=sep_col, ms=8, mew=2)
+            if separatrix:                       # the whole separatrix (psi = 0), not only the legs of the profile
+                for ln in cf.separatrix_lines(L, k):
+                    ax.plot(ln[:, 0], ln[:, 1], color=sep_col, lw=1)
+            for name, mk in (("inner", "o"), ("outer", "s")):
+                if name not in br:
+                    continue
+                if front:
+                    pt = cf.point_at(br[name], r[name][i])
+                    if pt is not None:
+                        ax.plot(*pt, mk, mfc="r", mec="w" if q == "emi" else "k", ms=9, mew=1)
+                    st = r["stored"][name][i]
+                    if np.isfinite(st):
+                        ax.plot(*cf.point_at(br[name], st), mk, mfc="none", mec="lime", ms=14, mew=2.5)
+                    txt.append(f"{name[:3]}: front {r[name][i]:.2f} m (l={r['l'][name][i]:.2f})")
         ax.set_xlim(0.62, 1.15)
         ax.set_ylim(-0.76, ZDIV)
         ax.set_aspect("equal")
-        ax.set_facecolor("k")
-        ax.set_title(f"t = {t[i]:.3f} s\n" + "\n".join(txt), fontsize=10)
-    for ax in axes.ravel()[len(pick):]:
+        title = f"t = {t[i]:.3f} s" + ("\n" + "\n".join(txt) if txt and q == qs[0] else "")
+        ax.set_title(title, fontsize=10)
+    shown = axes[:, :].ravel().tolist()
+    labels = {"emi": "CIII emissivity", "vpar": f"v$_\\parallel$ of the emitting ion ({unit})"}
+    for q, pc in pcs.items():                       # one colorbar per quantity, spanning its row(s)
+        rows = axes[qs.index(q)] if quantity == "both" else axes.ravel()[:len(order)]
+        fig.colorbar(pc, ax=list(rows), shrink=0.8, pad=0.01).set_label(labels[q])
+    for ax in axes.ravel()[len(order):]:
         ax.axis("off")
     for ax in axes[:, 0]:
         ax.set_ylabel("Z [m]")
     for ax in axes[-1]:
         ax.set_xlabel("R [m]")
-    fig.suptitle(f"shot {shot.shot} ({shot.baffle}): CIII emissivity, lower divertor", y=0.995)
-    fig.tight_layout(rect=(0, 0, 1, 0.98), h_pad=4.5)
+    names = {"emi": "emissivity", "vpar": "parallel velocity", "both": "emissivity (top) and parallel velocity (bottom)"}
+    fig.suptitle(f"shot {shot.shot} ({shot.baffle}): CIII {names[quantity]}, lower divertor")
     return fig
 
 

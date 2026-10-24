@@ -95,6 +95,16 @@ def branches(L, k, n=600, up=UP):
     return out
 
 
+def separatrix_lines(L, k, n=600):
+    """The whole separatrix at LIUQE frame k: list of (r, z) polylines of the psi = 0 contour of the equilibrium
+    map (confined-plasma boundary and both divertor legs down to the edge of the map). `branches` uses only
+    the two legs and their continuation above the X-point; this is for drawing."""
+    spl = RectBivariateSpline(L.R, L.Z, L.psi[:, :, k])
+    rr, zz = np.linspace(L.R[0], L.R[-1], n), np.linspace(L.Z[0], L.Z[-1], n)
+    lines = contourpy.contour_generator(rr, zz, spl(rr, zz).T).lines(0.0)
+    return [np.asarray(l_) for l_ in lines if len(l_) > 1]
+
+
 def point_at(branch, s):
     """(r, z) at distance s from the target along an extended branch (None if s is not finite)."""
     if not np.isfinite(s):
@@ -242,8 +252,8 @@ def build_CL(s):
     grid = _NS(R_mean=s[c + "grid/r_mean"], Z_mean=s[c + "grid/z_mean"], Area=s[c + "grid/area"],
                R_values=s[c + "grid/r_values"], Z_values=s[c + "grid/z_values"])
     C = _NS(grid=grid, emi=np.asarray(s[c + "emi"], float), t=tc,
-            **{n: np.asarray(s[c + n], float) for n in ("sFrontInner", "sFrontOuter", "lInner", "lOuter")
-               if s.has(c + n)})                                         # old files only: legacy stored fronts
+            **{n: np.asarray(s[c + n], float) for n in ("sFrontInner", "sFrontOuter", "lInner", "lOuter", "vpar")
+               if s.has(c + n)})        # legacy stored fronts (old files only); vpar if the file has it
     te = np.asarray(s.time_of("equilibrium/psi"), float)
     psi = np.asarray(s["equilibrium/psi"], float)                      # (R, Z, t)
     R, Z = np.asarray(s["equilibrium/r"], float), np.asarray(s["equilibrium/z"], float)
