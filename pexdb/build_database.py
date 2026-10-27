@@ -450,8 +450,9 @@ def d_valve(m):
 def d_ts(m):
     s = need_available(get(get(m, "EdgeData"), "TS"), "TS")
     return {"t": T_FRAMES, "r": s.R, "z": s.Z,            # fields: (t, point) or (t,)
-            **rs(s, ["te", "dte", "ne", "dne", "rho",
-                     "ne_u", "dne_u", "te_u", "dte_u"], s.t, 0),
+            **rs(s, ["te", "dte", "ne", "dne", "rho"], s.t, 0),
+            # values at the separatrix, TCV names ne_u, dne_u, te_u, dte_u
+            "separatrix": rs_as(s, {"ne": "ne_u", "dne": "dne_u", "te": "te_u", "dte": "dte_u"}, s.t, 0),
             "distance_separatrix_midplane": resample(s.dru, s.t, 0),
             # line-averaged density computed from TS; same name as the FIR quantity
             "av_dens": resample(s.nel, s.t, 0),

@@ -20,6 +20,7 @@ baffle colours as in the MATLAB scripts. Use `shot.color(by)` with by in
 """
 import glob
 import os
+import re
 import numpy as np
 import h5py
 
@@ -30,6 +31,10 @@ BAFFLE_COLORS = {"NINO": NINO_COL, "SILO": SILO_COL}
 CYCLE = ["tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple",
          "tab:brown", "tab:cyan", "tab:olive", "tab:gray", "tab:pink"]
 MARKERS = ["o", "s", "^", "v", "D", "P", "X", "<", ">", "*"]
+
+
+_UPSTREAM_NEW = re.compile(r"thomson_scattering/separatrix/(d?[nt]e)")
+_UPSTREAM_OLD = re.compile(r"thomson_scattering/(d?[nt]e)_u")
 
 
 class Unavailable(KeyError):
@@ -61,7 +66,21 @@ class Shot:
                                 for k in f if isinstance(f[k], h5py.Group)}
 
     # ---- access -----------------------------------------------------------
+    def _resolve(self, path):
+        """Old files store the TS upstream values as thomson_scattering/{ne,dne,te,dte}_u, new ones
+        as thomson_scattering/separatrix/{ne,dne,te,dte}; accept either spelling on either layout."""
+        if self._exists(path):
+            return path
+        m = _UPSTREAM_NEW.fullmatch(path.strip("/"))
+        alt = f"thomson_scattering/{m.group(1)}_u" if m else None
+        if alt is None and (m := _UPSTREAM_OLD.fullmatch(path.strip("/"))):
+            alt = f"thomson_scattering/separatrix/{m.group(1)}"
+        return alt if alt and self._exists(alt) else path
+
     def has(self, path):
+        return self._exists(self._resolve(path))
+
+    def _exists(self, path):
         parts = path.strip("/").split("/")
         if not self.diagnostics.get(parts[0], False):
             return False
@@ -82,6 +101,7 @@ class Shot:
         return a
 
     def __getitem__(self, path):
+        path = self._resolve(path)
         if path not in self._cache:
             if not self.has(path):
                 raise Unavailable(f"shot {self.shot}: '{path}' not available")
@@ -98,6 +118,7 @@ class Shot:
     def t_of(self, path):
         """Native time vector of the group that holds `path` (nearest enclosing group with a
         't' dataset); the root `t` if there is none."""
+        path = self._resolve(path)
         with h5py.File(self.path, "r") as f:
             for g in self._ancestors(path):
                 if "t" in f[g] and isinstance(f[g]["t"], h5py.Dataset):
@@ -122,11 +143,13 @@ class Shot:
         return self._slow_cache[path]
 
     def _is_common_view(self, path):
+        path = self._resolve(path)
         return self.grid == "common" and self._slow_group(path) is not None
 
     def time_of(self, path):
         """Time axis matching `self[path]`: the fast grid for slow data in the common view,
         otherwise the native time vector of the group."""
+        path = self._resolve(path)
         return self.t if self._is_common_view(path) else self.t_of(path)
 
     def _to_common(self, path, a):
@@ -176,6 +199,7 @@ class Shot:
         return np.moveaxis(out, 0, ax)
 
     def attr(self, path, name, default=None):
+        path = self._resolve(path)
         with h5py.File(self.path, "r") as f:
             return f[path.strip("/")].attrs.get(name, default)
 

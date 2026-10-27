@@ -56,13 +56,13 @@ def shot_page(shot, times=(0.8, 1.1, 1.4), figsize=(13, 9)):
           ("heating/power_nbi", "NBI", 1e-3)], "heating [kW]"),
         ([("interferometer/av_dens/data", "mean line-av. density", 1e-19),
           ("thomson_scattering/av_dens", "line-av. density (TS)", 1e-19),
-          ("thomson_scattering/ne_u", "ne_u (TS)", 1e-19)], r"$n_e$ [$10^{19}$ m$^{-3}$]"),
+          ("thomson_scattering/separatrix/ne", "ne_u (TS)", 1e-19)], r"$n_e$ [$10^{19}$ m$^{-3}$]"),
         ([("bolometer/power_tot", "tot", 1e-3), ("bolometer/power_core", "core", 1e-3),
           ("bolometer/power_div", "div", 1e-3), ("bolometer/power_xpt", "xpt", 1e-3)], "P_rad [kW]"),
         ([("gas_injection/valve/V1/flow_rate", "V1", 1)], r"gas [Pa m$^3$/s]"),
         ([("barometry/barometer/pressure_div", "baratron div", 1), ("barometry/barometer/pressure_mid", "baratron mid", 1),
           ("barometry/pressure_gauges/pressure_div", "gauge div", 1)], "pressure [Pa]"),
-        ([("thomson_scattering/te_u", "Te_u", 1)], r"$T_{e,u}$ [eV]"),
+        ([("thomson_scattering/separatrix/te", "Te_u", 1)], r"$T_{e,u}$ [eV]"),
         ([("camera_ir/HIR/power", "HIR", 1e-3), ("camera_ir/VIR/power", "VIR", 1e-3)], "IR power [kW]"),
     ]
     first = None

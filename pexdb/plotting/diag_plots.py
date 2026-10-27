@@ -189,9 +189,9 @@ def mantis_maps(shots, times=(0.8, 1.0, 1.2), camera="CIII_cam1", vmax=None, log
 def upstream_vs_time(shots, color_by="auto", t_range=(0.6, 1.6), err_style="bar",
                      capsize=pt.CAPSIZE):
     """Upstream ne_u and Te_u against time (with errors) for all shots."""
-    items = [("thomson_scattering/ne_u", r"$n_{e,u}$ [$10^{19}$ m$^{-3}$]", 1e-19,
-              "thomson_scattering/dne_u"),
-             ("thomson_scattering/te_u", r"$T_{e,u}$ [eV]", 1, "thomson_scattering/dte_u")]
+    items = [("thomson_scattering/separatrix/ne", r"$n_{e,u}$ [$10^{19}$ m$^{-3}$]", 1e-19,
+              "thomson_scattering/separatrix/dne"),
+             ("thomson_scattering/separatrix/te", r"$T_{e,u}$ [eV]", 1, "thomson_scattering/separatrix/dte")]
     return pt.time_traces(shots, items, t_range=t_range, color_by=color_by, err_style=err_style,
                           capsize=capsize)
 
@@ -202,8 +202,8 @@ def upstream_vs_pressure(shots, pressure="barometry/barometer/pressure_div",
     """ne_u and Te_u against the divertor baratron pressure (scatter, markers only)."""
     fig, axes = plt.subplots(1, 2, figsize=(9, 4))
     for ax, (q, dq, lab, sc) in zip(axes, [
-            ("ne_u", "dne_u", r"$n_{e,u}$ [$10^{19}$ m$^{-3}$]", 1e-19),
-            ("te_u", "dte_u", r"$T_{e,u}$ [eV]", 1)]):
+            ("separatrix/ne", "separatrix/dne", r"$n_{e,u}$ [$10^{19}$ m$^{-3}$]", 1e-19),
+            ("separatrix/te", "separatrix/dte", r"$T_{e,u}$ [eV]", 1)]):
         pt.xy_plot(shots, lambda s: s[pressure],
                    lambda s, q=q, sc=sc: s["thomson_scattering/" + q] * sc,
                    xlabel, lab, yerr_get=lambda s, d=dq, sc=sc: s["thomson_scattering/" + d] * sc,
@@ -715,7 +715,7 @@ def dss_profiles(shots, times=(0.8, 1.0, 1.2), lines=("CII_6582", "CIII_trip", "
 
 DSS_X = {   # name -> (path, scale, label)
     "t": (None, 1, "t [s]"),
-    "nesep": ("thomson_scattering/ne_u", 1e-19, r"$n_{e,sep}$ (TS) [$10^{19}$ m$^{-3}$]"),
+    "nesep": ("thomson_scattering/separatrix/ne", 1e-19, r"$n_{e,sep}$ (TS) [$10^{19}$ m$^{-3}$]"),
     "necore": ("thomson_scattering/av_dens", 1e-19,
                r"$\bar n_e$ core (TS) [$10^{19}$ m$^{-3}$]"),
     "pressure": ("barometry/pressure_gauges/pressure_div", 1e3, "divertor pressure [mPa]"),
@@ -848,9 +848,9 @@ def vs_density(shots, color_by="auto", t_range=(0.6, 1.6), err_style="bar", gas=
                                for _, lab, mk in items], fontsize=8, frameon=False,
                       loc="upper left")
     pt.xy_plot(shots, lambda s: s["thomson_scattering/av_dens"] * 1e-19,
-               lambda s: s["thomson_scattering/ne_u"] * 1e-19, xlabel,
+               lambda s: s["thomson_scattering/separatrix/ne"] * 1e-19, xlabel,
                r"$n_{e,u}$ (separatrix, TS) [$10^{19}$ m$^{-3}$]",
-               yerr_get=lambda s: s["thomson_scattering/dne_u"] * 1e-19, t_range=t_range,
+               yerr_get=lambda s: s["thomson_scattering/separatrix/dne"] * 1e-19, t_range=t_range,
                color_by=color_by, ax=axes[2], err_style=err_style, annotate=False)
     fig.tight_layout()
     return fig, axes
