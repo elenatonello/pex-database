@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""Print a summary of a shot_<N>.h5 database file.
+"""Print a summary of the database at three levels of detail (for talks).
 
-  1. shot info: description, regime, baffle, date, t_end, mean heating powers (and
-     where regime / date come from), time base, and a warning for every diagnostic
-     whose source shot differs from the shot
-  2. availability of every diagnostic (with the reason when missing)
-  3. the file structure as a tree (groups, dataset shapes, availability)
-  4. for every diagnostic: attributes (units, source_shot, ...) and each dataset with
-     shape, NaN fraction, min/max and, for time series, how many are completely empty
+  1. database : python3 -m pexdb.summarize_shot DIR              one line per shot_<N>.h5 (label of each shot)
+  2. shot     : python3 -m pexdb.summarize_shot shot_89837.h5    label + diagnostics (IMAS IDS names)
+  3. diagnostic: python3 -m pexdb.summarize_shot shot_89837.h5 thomson_scattering   contents of one diagnostic
 
-Usage: python3 -m pexdb.summarize_shot shot_89837.h5 [DIAG ...]   (DIAG = group names to detail)
+Each level is printed as a tree. A shot is labelled by its description (e.g. Ohmic L-mode), plasma current and
+toroidal field (signed, mean over the window) and baffle. Diagnostic groups are named after the IMAS IDS (see build_database.IDS_MAP);
+
+Full dump (header, availability, tree, every diagnostic with NaN statistics):
+    python3 -m pexdb.summarize_shot shot_89837.h5 --full [DIAG ...]
 """
+import glob
+import os
 import sys
 import warnings
 import numpy as np
@@ -74,7 +76,8 @@ def tree(group, prefix=""):
         last = i == len(items) - 1
         branch, cont = ("`-- ", "    ") if last else ("|-- ", "|   ")
         if isinstance(obj, h5py.Dataset):
-            print(f"{prefix}{branch}{name}  {obj.shape}")
+            unit = group.attrs.get(name + "_units", "")
+            print(f"{prefix}{branch}{name:<14s}{str(obj.shape):<14s}{'[' + fmt(unit) + ']' if unit != '' else ''}")
         elif obj.attrs.get("available", 1) == 0:
             print(f"{prefix}{branch}{name}/  [UNAVAILABLE: {obj.attrs.get('reason', '?')}]")
         else:
@@ -127,26 +130,97 @@ def header(f):
         print()
 
 
-def main(argv):
-    if not argv:
-        sys.exit(__doc__)
-    with h5py.File(argv[0], "r") as f:
+def shot_type(f):
+    """[(key, value)] describing the shot: description, signed mean Ip and Bt over the window, baffle."""
+    a = f.attrs
+    rows = [("description", a.get("description") or {"L": "L-mode", "H": "H-mode"}.get(a.get("regime", ""), "?"))]
+    for label, path, scale, unit, fmt_ in (("Ip", "equilibrium/ip", 1e3, "kA", "+.0f"),
+                                           ("Bt", "equilibrium/b0", 1, "T", "+.2f")):
+        if path in f and np.isfinite(np.nanmean(f[path][()])):
+            rows.append((label, f"{np.nanmean(f[path][()]) / scale:{fmt_}} {unit}"))
+    if "baffle" in a:
+        rows.append(("baffle", str(a["baffle"])))
+    return rows
+
+
+def flavour(f):
+    """One-line label of a shot: 'Ohmic L-mode, Ip -250 kA, Bt -1.43 T, SILO'."""
+    return ", ".join(f"{k} {v}" if k in ("Ip", "Bt") else v for k, v in shot_type(f))
+
+
+def diagnostics(f):
+    """(available, unavailable) top-level diagnostic groups."""
+    diags = [k for k in f if isinstance(f[k], h5py.Group)]
+    ok = [d for d in diags if f[d].attrs.get("available", 1)]
+    return ok, [d for d in diags if d not in ok]
+
+
+def branch(i, n):
+    """(connector, continuation prefix) for the i-th of n tree children."""
+    return ("`-- ", "    ") if i == n - 1 else ("|-- ", "|   ")
+
+
+def level1(directory):
+    files = sorted(glob.glob(os.path.join(directory, "shot_*.h5")))
+    print(f"{os.path.abspath(directory)}/   ({len(files)} files, one per shot)")
+    for i, path in enumerate(files):
+        with h5py.File(path, "r") as f:
+            print(f"{branch(i, len(files))[0]}{os.path.basename(path):<16s}{flavour(f)}")
+
+
+def level2(path):
+    with h5py.File(path, "r") as f:
+        ok, bad = diagnostics(f)
+        rows, names = shot_type(f), ok + bad
+        print(os.path.basename(path))
+        print("|-- shot type")
+        for i, (k, v) in enumerate(rows):
+            print(f"|   {branch(i, len(rows))[0]}{k:<12s}{v}")
+        print("`-- diagnostics")
+        for i, d in enumerate(names):
+            note = "" if d in ok else f"  [UNAVAILABLE: {f[d].attrs.get('reason', '?')}]"
+            print(f"    {branch(i, len(names))[0]}{d}{note}")
+
+
+def level3(path, diag):
+    with h5py.File(path, "r") as f:
+        if diag not in f:
+            sys.exit(f"{diag} not in {path}; choose from: {', '.join(diagnostics(f)[0])}")
+        print(f"{os.path.basename(path)}/{diag}/")
+        tree(f[diag])
+
+
+def full(path, diags):
+    with h5py.File(path, "r") as f:
         header(f)
-        diags = [k for k in f if isinstance(f[k], h5py.Group)]
-        ok = [d for d in diags if f[d].attrs.get("available", 1)]
-        print(f"Available ({len(ok)}/{len(diags)}): {', '.join(ok)}")
-        for d in diags:
-            if d not in ok:
-                print(f"Unavailable: {d} ({f[d].attrs.get('reason', '?')})")
+        ok, bad = diagnostics(f)
+        print(f"Available ({len(ok)}/{len(ok) + len(bad)}): {', '.join(ok)}")
+        for d in bad:
+            print(f"Unavailable: {d} ({f[d].attrs.get('reason', '?')})")
         print("\n=== STRUCTURE ===")
         print(f"{f.filename}/")
         tree(f)
-        for d in (argv[1:] or ok):
+        for d in (diags or ok):
             if d not in f:
                 print(f"\n=== {d} ===\n  not in file")
                 continue
             print(f"\n=== {d} ===")
             show(f[d], 1)
+
+
+def main(argv):
+    full_dump = "--full" in argv
+    argv = [a for a in argv if a != "--full"]
+    if not argv:
+        sys.exit(__doc__)
+    if os.path.isdir(argv[0]):
+        level1(argv[0])
+    elif full_dump:
+        full(argv[0], argv[1:])
+    elif len(argv) == 1:
+        level2(argv[0])
+    else:
+        level3(argv[0], argv[1])
 
 
 if __name__ == "__main__":
