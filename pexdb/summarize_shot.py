@@ -130,6 +130,22 @@ def header(f):
         print()
 
 
+def active_valves(f):
+    """Gas valves that injected during the window: 'name (species)' for every valve whose flow_rate is
+    non-zero somewhere (NaN ignored)."""
+    out = []
+    if "gas_injection/valve" not in f or not f["gas_injection"].attrs.get("available", 1):
+        return out
+    for name, g in f["gas_injection/valve"].items():
+        if not isinstance(g, h5py.Group) or not g.attrs.get("available", 1) or "flow_rate" not in g:
+            continue
+        flow = np.asarray(g["flow_rate"][()], dtype=float)
+        if flow.size and np.isfinite(flow).any() and np.nanmax(np.abs(flow)) > 0:
+            sp = g["species_name"][()] if "species_name" in g else g.attrs.get("species_name", "")
+            out.append(f"{name} ({fmt(sp)})" if fmt(sp) else name)
+    return out
+
+
 def shot_type(f):
     """[(key, value)] describing the shot: description, signed mean Ip and Bt over the window, baffle."""
     a = f.attrs
@@ -140,12 +156,13 @@ def shot_type(f):
             rows.append((label, f"{np.nanmean(f[path][()]) / scale:{fmt_}} {unit}"))
     if "baffle" in a:
         rows.append(("baffle", str(a["baffle"])))
+    rows.append(("gas valve", ", ".join(active_valves(f)) or "none"))
     return rows
 
 
 def flavour(f):
-    """One-line label of a shot: 'Ohmic L-mode, Ip -250 kA, Bt -1.43 T, SILO'."""
-    return ", ".join(f"{k} {v}" if k in ("Ip", "Bt") else v for k, v in shot_type(f))
+    """One-line label of a shot: 'Ohmic L-mode, Ip -250 kA, Bt -1.43 T, SILO, gas valve D2_1 (D2)'."""
+    return ", ".join(f"{k} {v}" if k in ("Ip", "Bt", "gas valve") else v for k, v in shot_type(f))
 
 
 def diagnostics(f):
